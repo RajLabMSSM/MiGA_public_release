@@ -1,0 +1,272 @@
+---
+title: "Exploratory plots"
+subtitle: "After QC"
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> 255 samples | 
+> 4 brain regions | 
+> Multi disease cohort. 
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+library("readxl") #to read excel into R
+library(knitr)
+library(dplyr)
+library(kableExtra)
+library(ggplot2)
+library(RColorBrewer)
+#install.packages("UpSetR")
+library("UpSetR")
+require(grid)
+require(gridExtra)
+library(ggfortify)
+library(ggsci)
+library("readxl")
+library(factoextra)
+library(ggpubr)
+library(ggeasy)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r folders, echo=TRUE}
+work_dir = "~/pd-omics/katia/Microglia/mic_255s/"
+expression_dir = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/expr_4brain_regions/"
+metadata_path = "~/pd-omics/katia/Microglia/mic_255s/metadata_files/"
+sup_fig = "/Users/katia/OneDrive/Documentos/MountSinai/Projects/Microglia/Suplementary_material/expl_plots/"
+```
+
+## Metadata
+```{r input.data, echo=TRUE}
+load(paste0(expression_dir, "Expression_filt_255s.Rdata")) 
+# dim(genes_counts_exp_3rd) # 19376   255
+
+load(paste0(metadata_path, "metadata_255filt_eng_29jun2020.Rdata"))
+# str(metadata3rd_pass)
+
+metadata <- metadata3rd_pass[, ! colnames(metadata3rd_pass) %in% c("C5", "C6", "C7", "C8", "C9", "C10")] 
+# rownames(metadata) = metadata$donor_tissue
+
+createDT(metadata)
+```
+
+### Number of donors
+```{r number_donors, echo=TRUE}
+length(unique(metadata$donor_id))
+```
+
+### Brain regions 
+```{r overview, echo=TRUE}
+numb_tissues = as.data.frame(table(metadata$tissue))
+colnames(numb_tissues) = c("Tissue", ("Number of donors"))
+createDT(numb_tissues)
+
+```
+
+```{r barplot_regions, echo=TRUE, fig.width=6, fig.height=4, dpi=300}
+
+#pdf(paste0(sup_fig, "donors_region.pdf"), width = 6, height = 4)
+ggplot(numb_tissues, aes(x=Tissue, y=`Number of donors`, fill=Tissue)) +
+  geom_bar(stat = "identity", width=0.5, color="black") +
+  scale_fill_futurama() +
+  theme_classic()
+#dev.off()
+
+```
+
+## Demographics 
+### Sex 
+```{r sex.count, echo=TRUE}
+sexByDonor = unique(metadata[,c("donor_id", "sex")])
+#createDT(sexByDonor)
+as.data.frame(t(as.matrix(unclass(  table(sexByDonor$sex, useNA = "ifany"))))) %>%
+ kable(row.names = F) %>%
+ kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+
+## Age range
+Dashed bars for mean of age. Red = female | Blue = male. 
+```{r age_distribution, echo=TRUE}
+ageByDonor = unique(metadata[,c("donor_id", "age", "sex")])
+#createDT(ageByDonor)
+max(ageByDonor$age, na.rm = T)
+min(ageByDonor$age, na.rm = T)
+```
+
+```{r hist.age, echo=TRUE, fig.width=6, fig.height=4, dpi=300, warning=FALSE}
+mean_f = mean(ageByDonor[ageByDonor$sex == "f", "age"], na.rm = T)
+mean_m = mean(ageByDonor[ageByDonor$sex == "m", "age"], na.rm = T)
+
+#pdf(paste0(sup_fig, "age_donors.pdf"), width = 6, height = 4)
+ggplot(ageByDonor, aes(x=age, fill=sex)) +
+  geom_histogram(bins = 25, colour='black', position = "stack") +
+  labs(x="Age", y="Donors") +
+  scale_y_continuous(breaks = (1:20)) +
+  scale_x_continuous(breaks=seq(20,120,10)) + 
+  geom_vline(xintercept=mean_f, color = "red", linetype="dashed") +
+  geom_vline(xintercept=mean_m, color = "blue", linetype="dashed") +
+  theme_classic()
+#dev.off()
+```
+
+```{r age.boxplot, echo=TRUE, fig.width=3, fig.height=3, dpi=100, warning=FALSE}
+#pdf(paste0(sup_fig, "age_donors_boxplot.pdf"), width = 3, height = 3)
+ggplot(ageByDonor, aes(x = sex, y = age, fill = sex)) +
+  geom_boxplot(notch = T, na.rm = T) +
+  theme_classic()
+#dev.off()
+
+```
+
+### Main diagnosis (n = 100)
+```{r status, echo=TRUE}
+Main_diagnosisByDonnor = unique(metadata[,c("donor_id", "main_diagnosis")])
+createDT(Main_diagnosisByDonnor)
+```
+
+### Number of different Main diagnosis 
+```{r overview_diag, echo=TRUE}
+length(unique(metadata$main_diagnosis))
+```
+
+### Main diagnosis by donor
+```{r MainDiagnosis_count, echo=TRUE}
+Main_diagnosisByDonnor = unique(metadata[,c("donor_id", "main_diagnosis")])
+as.data.frame(t(as.matrix(unclass(  table(Main_diagnosisByDonnor$main_diagnosis, useNA = "ifany")  )))) %>%
+ kable(row.names = F) %>%
+ kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+
+```{r MainDiagnosis_plot, echo=TRUE, fig.width=6, fig.height=6, dpi=100}
+pie_table = table(Main_diagnosisByDonnor$main_diagnosis)
+
+#pdf(paste0(sup_fig, "pie_diagnosis.pdf"), width = 6, height = 6)
+myPalette <- brewer.pal(10, "Set3") 
+pie(pie_table, border = "white", col = myPalette) +
+  coord_polar("y", start = 0) 
+#dev.off()
+```
+
+### Main diagnosis by sample (n = 255)
+```{r MainDiagnosis_sample, echo=TRUE}
+as.data.frame(table(metadata$main_diagnosis), useNA = "ifany"  ) %>%
+ kable(row.names = F) %>%
+ kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+
+```{r mainDiag_barplot, echo=TRUE, fig.width=6, fig.height=6, dpi=300}
+df = as.data.frame(table(metadata$main_diagnosis))
+colnames(df) <- c("Diagnosis", "Frequency")
+
+pdf(paste0(sup_fig, "diagnosis_barplot.pdf"), width = 4, height = 5)
+ggplot(data = df, aes(x=Diagnosis, y=Frequency)) +
+  geom_text(aes(label=Frequency), vjust=-0.5, size=3.5) +
+  geom_bar(stat = "identity", width=0.5, color="#709AE1FF", fill="#709AE1FF") + 
+ # theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + 
+  theme_classic() +
+  ggeasy::easy_rotate_x_labels(angle = 45, side = c("right"))
+dev.off()
+```
+
+### Samples by Main diagnosis and Tissue (n = 255)
+```{r MainDiagnosis_sample_region, echo=TRUE}
+as.data.frame(table(metadata[,c("main_diagnosis", "tissue")]), useNA = "ifany"  ) %>% tidyr::spread(tissue, Freq) %>%
+ kable(row.names = F) %>%
+ kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+
+## Upset plot
+```{r upset_plot, echo=TRUE, fig.width=6, fig.height=4, dpi=100}
+# table(metadata$tissue) # To check
+# 7 brain regions 
+gfm_list = unique(metadata$donor_id[which(metadata$tissue == "MFG")])
+gts_list = unique(metadata$donor_id[which(metadata$tissue == "STG")])
+svz_list = unique(metadata$donor_id[which(metadata$tissue == "SVZ")])
+tha_list = unique(metadata$donor_id[which(metadata$tissue == "THA")])
+
+gene_overlap = list(
+  GFM = gfm_list,
+  GTS = gts_list, 
+  SVZ = svz_list,
+  THA = tha_list)
+
+#pdf(paste0(sup_fig, "upset_regions.pdf"), width = 6, height = 4)
+upset(fromList(gene_overlap), empty.intersections = NULL, order.by = "freq",nsets = 7, sets.bar.color = "#56B4E9")
+#dev.off()
+```
+
+### Cause of death (n = 100)
+```{r CauseOfDeath_table, echo=TRUE}
+DonorByDeath = unique(metadata[,c("donor_id", "cause_of_death_categories")])
+#createDT(DonorByDeath)
+as.data.frame(t(as.matrix(unclass(  table(DonorByDeath$cause_of_death_categories, useNA = "ifany")  )))) %>%
+ kable(row.names = F) %>%
+ kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+
+```{r CauseOfDeath_counts, echo=TRUE, fig.width=6, fig.height=6, dpi=300}
+
+df = as.data.frame(table(DonorByDeath$cause_of_death_categories, useNA = "ifany"))
+colnames(df) <- c("Cause_of_death", "Frequency")
+
+pdf(paste0(sup_fig, "cause_death_donors.pdf"), width = 6, height = 6)
+ggplot(data=df, aes(x=Cause_of_death, y=Frequency)) +
+  geom_bar(stat="identity",width=0.5, fill="#FA8072")+
+  geom_text(aes(label=Frequency), vjust=-0.5, size=3.5, color="black", size=3.5)+
+ # coord_flip() + 
+  theme_classic()+
+  ggeasy::easy_rotate_x_labels(angle = 45, side = c("right"))
+dev.off()
+```
+
+
+```{r}
+sessionInfo()
+```

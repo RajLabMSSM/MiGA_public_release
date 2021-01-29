@@ -1,0 +1,312 @@
+---
+title: "Exploratory plots"
+subtitle: "PCAs"
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> 255 samples | 
+> Different brain regions from the same donor | 
+> Multi disease cohort. 
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+
+library(knitr)
+library(dplyr)
+library(kableExtra)
+library(ggplot2)
+library(RColorBrewer)
+require(grid)
+require(gridExtra)
+library(ggfortify)
+library(ggsci)
+library(factoextra)
+library(dplyr)
+library(tidyr)
+library(ggeasy)
+library(ggpubr)
+library("edgeR")
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+
+```{r folders, echo=TRUE}
+expression_dir = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/expr_4brain_regions/"
+work_plots = "~/pd-omics/katia/scripts/GitHub_scripts/glia_omics/3rd_pass_mic_255s/"
+metadata_path = "~/pd-omics/katia/Microglia/mic_255s/metadata_files/"
+plots4paper = "/Users/katia/OneDrive/Documentos/MountSinai/Projects/Microglia/Figures4paper/"
+sup_fig = "/Users/katia/OneDrive/Documentos/MountSinai/Projects/Microglia/Suplementary_material/expl_plots/"
+```
+
+```{r input.data, echo=TRUE}
+load(paste0(expression_dir, "Expression_filt_255s.Rdata")) 
+# dim(genes_counts_exp_3rd) # 19376   255
+
+load(paste0(metadata_path, "metadata_255filt_eng_29jun2020.Rdata"))
+# str(metadata3rd_pass)
+metadata <- metadata3rd_pass
+# To use **cause_of_death** in the model, I got the NAs and change it for "Other" category. 
+#To use C1-C4 I calculated the median for the missing samples. 
+
+metadata$cause_of_death_categories[metadata$cause_of_death_categories %in% NA] <- "Other"
+#table(metadata$cause_of_death_categories)
+
+metadata$C1 = metadata$C1 %>% replace_na(median(metadata$C1, na.rm = T))
+metadata$C2 = metadata$C2 %>% replace_na(median(metadata$C2, na.rm = T))
+metadata$C3 = metadata$C3 %>% replace_na(median(metadata$C3, na.rm = T))
+metadata$C4 = metadata$C4 %>% replace_na(median(metadata$C4, na.rm = T))
+
+```
+
+## PCAs
+PCs 1 and 2. 
+Voom without correction. 
+```{r pca.diverse, echo=TRUE, fig.width=12, fig.height=8, dpi=300}
+res.pca = prcomp(t(genes_counts_voom_3rd)) 
+
+g1 <- autoplot(res.pca, data = metadata, colour = 'tissue') +
+  scale_color_futurama() +
+  easy_add_legend_title("Region") +
+theme_classic()
+
+g2 <- autoplot(res.pca, data = metadata, colour = 'cause_of_death_categories') +
+  scale_colour_igv() +
+  easy_add_legend_title("Cause of death") +
+  theme_classic() 
+
+g3 <- autoplot(res.pca, data = metadata, colour = 'main_diagnosis') +
+  scale_colour_manual(values = c("darkviolet", "orange", "green", "darkblue", "lightblue", "red", "pink", "yellow", "#5C88DAFF")) +
+  easy_add_legend_title("Diagnosis") +
+  theme_classic()
+
+g4 <- autoplot(res.pca, data = metadata, colour = 'pmd_minutes') +
+  scale_color_viridis_c() +
+  easy_add_legend_title("PMD minutes") +
+  theme_classic()
+
+g5 <- autoplot(res.pca, data = metadata, colour = 'batch') +
+theme_classic() 
+
+# pdf(paste0(plots4paper, "SUPP_PCAs_voom_255s.pdf"), width=12, height=8)
+#grid.arrange(g1,g2,g3,g4, ncol = 2)
+ggarrange(g1,g2,g3,g4, ncol=2, nrow = 2, labels = c("a", "b", "c", "d"))
+# dev.off()
+# plot(g2)
+```
+
+## Remove BatchEffects 
+### Region (n = 255) 
+
+a = Voom without correction. b = After removeBatchEffect without regressing out tissue. 
+
+```{r pca2, fig.width=10, fig.height=4, dpi=300}
+allResiduals <- removeBatchEffect(x = genes_counts_voom_3rd, 
+                                  batch = metadata$sex, 
+                                  batch2 = metadata$cause_of_death_categories,
+                                  design = model.matrix(~ tissue, data = metadata), #force to not regress tissue. 
+                                  covariates = as.matrix(metadata[, c("picard_pct_mrna_bases", "picard_summed_median", "picard_pct_ribosomal_bases", "C1","C2","C3","C4" )]))
+
+res.pca = prcomp(t(allResiduals)) 
+
+# pdf(paste0(plots4paper, "PCA_255s_residuals.pdf"), width=4, height=3)
+g6 <- autoplot(res.pca, data = metadata, colour = 'tissue') +
+  scale_colour_futurama() +
+  easy_add_legend_title("Region") +
+ # scale_colour_viridis_c() +
+  theme_classic()
+# dev.off()
+
+# pdf(paste0(plots4paper, "PCAs_255s_voomxresiduals.pdf"), width=10, height=4)
+ggarrange(g1,g6, labels = c("a", "b"))
+# dev.off()
+```
+
+## Remove BatchEffects 
+### Age (n = 255) 
+
+a = Voom without correction. b = After removeBatchEffect without regressing out age -> colored by age. 
+
+```{r pca_age, fig.width=10, fig.height=4, dpi=300}
+
+# MFG = #FF6F00FF
+# STG = #C71000FF
+# SVZ = #008EA0FF
+# THA = #8A4198FF
+
+res.pca = prcomp(t(genes_counts_voom_3rd)) 
+
+k1 <- autoplot(res.pca, data = metadata, colour = 'age') +
+ # scale_color_gradient2(low = "#008EA0FF", midpoint = 60, mid = "#FF6F00FF", high = "#8A4198FF", na.value = NA ) +
+  scale_color_viridis_c(option = "magma") + 
+  easy_add_legend_title("Age") +
+  theme_classic()
+
+allResiduals <- removeBatchEffect(x = genes_counts_voom_3rd, 
+                                  batch = metadata$sex, 
+                                  batch2 = metadata$cause_of_death_categories,
+                                  design = model.matrix(~ tissue, data = metadata), #force to not regress tissue. 
+                                  covariates = as.matrix(metadata[, c("picard_pct_mrna_bases", "picard_summed_median", "picard_pct_ribosomal_bases", "C1","C2","C3","C4" )]))
+
+res.pca = prcomp(t(allResiduals)) 
+
+k2 <- autoplot(res.pca, data = metadata, colour = 'age') +
+  scale_color_viridis_c(option = "magma") + 
+  easy_add_legend_title("Age") +
+  theme_classic()
+
+# pdf(paste0(plots4paper, "PCAs_255s_voomxresiduals_Age.pdf"), width=10, height=4)
+ggarrange(k1,k2, labels = c("a", "b"))
+# dev.off()
+
+# pdf(paste0(plots4paper, "PCAs_255s_Age.pdf"), width=3, height=2)
+plot(k2)
+# dev.off()
+
+```
+
+
+### (n = 112)
+Only the donors who share the four main brain regions.  
+a = Voom without correction. b = After removeBatchEffect without regressing out tissue. 
+
+Covariates removed: sex, cause_of_death_categories, picard_pct_mrna_bases, picard_summed_median, picard_pct_ribosomal_bases and C1-C4. Without regressing out tissue.
+```{r pca_112s, fig.width=10, fig.height=4, dpi=300}
+metadata_numb <- metadata
+donors_4tissues <- metadata_numb %>% group_by(donor_id) %>% summarise(n=n()) %>% filter(n==4)
+metadata_numb <- metadata[metadata$donor_id %in% donors_4tissues$donor_id ,]
+metadata_numb$cause_of_death_categories <- as.factor(as.character(metadata_numb$cause_of_death_categories))
+
+genes_voom_numb <- genes_counts_voom_3rd[, colnames(genes_counts_voom_3rd) %in% metadata_numb$donor_tissue]
+# all(colnames(genes_voom_numb) == metadata_numb$donor_tissue) # Check the order 
+# dim(genes_voom_numb)
+
+res.pca = prcomp(t(genes_voom_numb)) 
+
+g7 <- autoplot(res.pca, data = metadata_numb, colour = 'tissue') +
+  scale_colour_futurama() +
+  easy_add_legend_title("Region") +
+  theme_classic()
+
+allResiduals <- removeBatchEffect(x = genes_voom_numb, 
+                                  batch = metadata_numb$sex, 
+                                  batch2 = metadata_numb$cause_of_death_categories,
+                                 # design = model.matrix(~ tissue, data = metadata_numb), #force to not regress tissue. 
+                                  covariates = as.matrix(metadata_numb[, c("picard_pct_mrna_bases", "picard_summed_median", "picard_pct_ribosomal_bases", "C1","C2","C3","C4" )]))
+
+res.pca = prcomp(t(allResiduals)) 
+
+g8 <- autoplot(res.pca, data = metadata_numb, colour = 'tissue') +
+  scale_colour_futurama() +
+  easy_add_legend_title("Region") +
+  theme_classic()
+
+# pdf(paste0(plots4paper, "PCA_112s_voomxresiduals.pdf"), width=10, height=4)
+ggarrange(g7,g8, labels = c("a", "b"))
+# dev.off()
+
+# pdf(paste0(plots4paper, "PCA_112s_Region_panel.pdf"), width=3, height=2)
+plot(g8)
+# dev.off()
+```
+
+### Donors are numbers
+PCA with donors who share the 4 main brain tissues. 112 samples from 28 donors. 
+
+a = Voom without correction. b = After removeBatchEffect without regressing out tissue. 
+```{r numb, fig.width=10, fig.height=4, dpi=300}
+metadata_numb$donor_numb = as.numeric(as.factor(metadata_numb$donor_id)) # Gera números por donor! 
+
+metadata_numb$tissue_sm = as.character(metadata_numb$tissue)
+metadata_numb$tissue_sm[metadata_numb$tissue_sm == "MFG"] <- "m"
+metadata_numb$tissue_sm[metadata_numb$tissue_sm == "STG"] <- "s"
+metadata_numb$tissue_sm[metadata_numb$tissue_sm == "THA"] <- "t"
+metadata_numb$tissue_sm[metadata_numb$tissue_sm == "SVZ"] <- "z"
+metadata_numb$tissue_sm <- as.factor(metadata_numb$tissue_sm)
+
+metadata_numb$donor_numb2 <- paste0(metadata_numb$donor_numb, metadata_numb$tissue_sm)
+rownames(metadata_numb) <- metadata_numb$donor_numb2
+
+genes_voom_numb <- genes_counts_voom_3rd[, colnames(genes_counts_voom_3rd) %in% metadata_numb$donor_tissue]
+# all(colnames(genes_voom_numb) == metadata_numb$donor_tissue) # Check the order 
+colnames(genes_voom_numb) <- rownames(metadata_numb)
+
+res.pca = prcomp(t(genes_voom_numb)) 
+
+g9 <- autoplot(res.pca, data = metadata_numb, colour = 'tissue', label=T, shape = F) +
+  scale_colour_futurama() +
+  easy_add_legend_title("Region") +
+ # scale_colour_viridis_c() +
+  theme_classic()
+ 
+############# Using residuals 
+residuals_numb <- allResiduals[, colnames(allResiduals) %in% metadata_numb$donor_tissue ] #Calculated in the later chunck for 112 samples
+# all(colnames(residuals_numb) == metadata_numb$donor_tissue)
+colnames(residuals_numb) <- rownames(metadata_numb)
+
+res.pca = prcomp(t(allResiduals)) 
+
+g10 <- autoplot(res.pca, data = metadata_numb, colour = 'tissue', label=T, shape = F) +
+  scale_colour_futurama() +
+  easy_add_legend_title("Region") +
+ # scale_colour_viridis_c() +
+  theme_classic()
+
+#pdf(paste0(plots4paper, "PCA_112s_voomxresiduals_numbers.pdf"), width=10, height=4)
+ggarrange(g9,g10, labels = c("a", "b"))
+#dev.off()
+
+```
+
+```{r all, fig.width=10, fig.height=16, dpi=300}
+pdf(paste0(sup_fig, "PCAs.pdf"), width = 10, height = 16)
+ggarrange(g1,g2,g3,g4,g1,g6,g7,g8, k1, k2, ncol = 2, nrow = 5)
+dev.off()
+```
+
+
+```{r}
+sessionInfo()
+```
+

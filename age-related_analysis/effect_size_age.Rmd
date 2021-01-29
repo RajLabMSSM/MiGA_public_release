@@ -1,0 +1,222 @@
+---
+title: "Plotting the Effect Sizes"
+subtitle: " "
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+if(!require("RColorBrewer")) install.packages("RColorBrewer"); library("RColorBrewer")
+if(!require("gplots")) install.packages("gplots"); library("gplots")
+if(!require("ggplot2")) install.packages("ggplot2"); library("ggplot2")
+if(!require("reshape2")) install.packages("reshape2"); library("reshape2")
+library(ggpubr)
+library(ggrepel)
+library(venn)
+library(ggsci)
+library("readxl")
+library(ggeasy)
+library(dplyr)
+library(ggpmisc)
+library(tidyverse)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r folders, echo=TRUE}
+work_plots = "/Users/katia/OneDrive/Documentos/MountSinai/Projects/Microglia/Figures4paper/Fig_age/age_effect_size/"
+lists2compare = "~/pd-omics/katia/scripts/GitHub_scripts/glia_omics/3rd_pass_mic_255s/age_related/age_by_region/"
+inter_terms = "~/pd-omics/katia/scripts/GitHub_scripts/glia_omics/3rd_pass_mic_255s/age_interaction/"
+```
+
+```{r pd_de, echo=TRUE}
+deg_list_1 = read.table(file = paste0(lists2compare, "List_age_limma_MFG.txt"), header = T)
+deg_list_1 = deg_list_1[order(deg_list_1$adj.P.Val) ,]
+#length(which(deg_list_1$adj.P.Val<0.05)) 
+deg_list_1$study = "age_MFG"
+deg_list_1$ensembl = rownames(deg_list_1)
+
+deg_list_2 = read.table(file = paste0(lists2compare, "List_age_limma_STG.txt"), header = T)
+deg_list_2 = deg_list_2[order(deg_list_2$adj.P.Val) ,]
+# length(which(deg_list_2$adj.P.Val<0.05)) 
+deg_list_2$study = "age_STG"
+deg_list_2$ensembl = rownames(deg_list_2)
+
+deg_list_3 = read.table(file = paste0(lists2compare, "List_age_limma_THA.txt"), header = T)
+deg_list_3 = deg_list_3[order(deg_list_3$adj.P.Val) ,]
+# length(which(deg_list_3$adj.P.Val<0.05)) 
+deg_list_3$study = "age_THA"
+deg_list_3$ensembl = rownames(deg_list_3)
+
+deg_list_4 = read.table(file = paste0(lists2compare, "List_age_limma_SVZ.txt"), header = T)
+deg_list_4 = deg_list_4[order(deg_list_4$adj.P.Val) ,]
+# length(which(deg_list_4$adj.P.Val<0.05)) 
+deg_list_4$study = "age_SVZ"
+deg_list_4$ensembl = rownames(deg_list_4)
+
+inter_terms_list = read.table(file = paste0(inter_terms, "interaction_list_77g.txt"), header = T)
+
+```
+
+## Age - all genes 
+Beta values of all genes. 
+```{r effect_size1, fig.width=6, fig.height=4, dpi=300}
+
+deg_list_all = deg_list_1[,c("ensembl","symbol","logFC","study")] %>% 
+  left_join(deg_list_2[,c("ensembl","logFC")], by = "ensembl") %>%
+  left_join(deg_list_3[,c("ensembl","logFC")], by = "ensembl") %>%
+  left_join(deg_list_4[,c("ensembl","logFC")], by = "ensembl")
+colnames(deg_list_all) = c("ensembl","symbol","logFC_MFG","MFG","logFC_STG","logFC_THA","logFC_SVZ")
+
+genes_m = melt(deg_list_all, id.vars = c("ensembl","symbol","logFC_MFG","MFG"))
+
+genes_m$variable = gsub("(.*)_(.*)", "\\2", genes_m$variable)
+genes_m$variable = factor(genes_m$variable, levels = c("STG","THA","SVZ"))
+
+#pdf(file = paste0(work_plots, "beta_age_all.pdf"), width = 6, height = 4)
+ggplot2::ggplot(genes_m, aes(x = logFC_MFG, y = value, color = variable)) + 
+  geom_point(alpha = .5) +
+  scale_color_manual(values = c("#C71000FF", "#8A4198FF", "#008EA0FF")) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "black") + 
+  stat_smooth(method = "lm", se=F) + # Add Regression Line 
+  stat_regline_equation(aes(label = ..adj.rr.label..), show.legend = F)  + # Add R-Square
+#  stat_regline_equation(aes(label = ..rr.label..))  +
+  easy_labs(x = expression(paste("MFG age-related (", beta,")")), y = expression(paste("age-related (", beta, ")"))) +
+  easy_add_legend_title("Region") +
+  theme_classic()
+#dev.off()
+```
+
+## Age - filtered 1
+Shows only the genes with FDR < 0.05 in MFG.
+
+X = beta in MFG. 
+Y = beta in the other brain regions (by color). 
+```{r effect_size2, fig.width=6, fig.height=4, dpi=300}
+genes_m_filt = genes_m[genes_m$ensembl %in% deg_list_1$ensembl[deg_list_1$adj.P.Val < 0.05], ]
+
+#pdf(file = paste0(work_plots, "beta_age_005_MFG.pdf"), width = 6, height = 4)
+ggplot2::ggplot(genes_m_filt, aes(x = logFC_MFG, y = value, color = variable)) + 
+  geom_point() +
+  scale_color_manual(values = c("#C71000FF", "#8A4198FF", "#008EA0FF")) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "black") + 
+  stat_smooth(method = "lm", se=F) + # Add Regression Line 
+  stat_regline_equation(aes(label = ..adj.rr.label..), show.legend = F)  + # Add R-Square
+#  stat_regline_equation(aes(label = ..rr.label..))  +
+  easy_labs(x = expression(paste("MFG age-related (", beta,")")), y = expression(paste("age-related (", beta, ")"))) +
+  easy_add_legend_title("Region") +
+  theme_classic()
+#dev.off()
+```
+
+## Age - filtered 2
+Shows only the genes with FDR < 0.05 in at least one region + the interaction terms genes (77 genes from MFGxSVZ).
+
+X = beta in MFG. 
+Y = beta in the other brain regions (by color). 
+```{r effect_size3, fig.width=6, fig.height=4, dpi=300}
+genes_m_filt = genes_m[genes_m$ensembl %in% unique(c(deg_list_1$ensembl[deg_list_1$adj.P.Val < 0.05],
+                                                     deg_list_2$ensembl[deg_list_2$adj.P.Val < 0.05],
+                                                     deg_list_3$ensembl[deg_list_3$adj.P.Val < 0.05],
+                                                     deg_list_4$ensembl[deg_list_4$adj.P.Val < 0.05],
+                                                   as.character(inter_terms_list$ensembl))), ]
+
+symbol4label = c("MS4A6A", "MERTK", "ANXA1", "MRC1", "LYVE1") 
+genes_m_filt4lab = genes_m_filt
+genes_m_filt4lab$overlap = genes_m_filt4lab$symbol
+genes_m_filt4lab$overlap[(!genes_m_filt4lab$overlap %in% symbol4label) | genes_m_filt4lab$variable!="SVZ"] = ""
+
+# pdf(file = paste0(work_plots, "beta_age_sign_005_oneregion_label_interac.pdf"), width = 6, height =4)
+ggplot2::ggplot(genes_m_filt4lab, aes(x = logFC_MFG, y = value, color = variable)) + 
+  geom_point() +
+  scale_color_manual(values = c("#C71000FF", "#8A4198FF", "#008EA0FF")) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "lightgrey") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "lightgrey") + 
+  stat_smooth(method = "lm", se=F) + # Add Regression Line +
+  stat_poly_eq(formula = y ~ x, aes(label = paste(..adj.rr.label..,..p.value.label..,sep = "*`,`~")), parse=TRUE) +
+ # stat_regline_equation(aes(label = paste(..adj.rr.label..)), show.legend = F)  + # Add R-Square
+#  stat_regline_equation(aes(label = ..rr.label..))  +
+  #geom_text_repel(aes(label = overlap),color="black",force = 4) + # Descoment to show the symbol
+  geom_label_repel(aes(label = overlap), size = 3, color="black", box.padding = 0.4, label.size = NA, fill = alpha(c("white"),0.5)) + # Descoment to show the symbol
+  easy_labs(x = expression(paste("MFG age-related (", beta,")")), y = expression(paste("age-related (", beta, ")"))) +
+  easy_add_legend_title("Region") +
+  theme_classic()
+#dev.off()
+```
+
+## Age - filtered 3
+Shows the top 100 DE genes in each region (lists might overlap).
+
+X = beta in MFG. 
+Y = beta in the other brain regions (by color). 
+```{r effect_size5, fig.width=6, fig.height=4, dpi=300}
+genes_m_filt = genes_m[genes_m$ensembl %in% unique(c(deg_list_1$ensembl[1:100],
+                                                     deg_list_2$ensembl[1:100],
+                                                     deg_list_3$ensembl[1:100],
+                                                     deg_list_4$ensembl[1:100])), ]
+
+#pdf(file = paste0(work_plots, "beta_age_sign_top100_oneregion.pdf"), width = 6, height = 4)
+ggplot2::ggplot(genes_m_filt, aes(x = logFC_MFG, y = value, color = variable)) + 
+  geom_point() +
+  scale_color_manual(values = c("#C71000FF", "#8A4198FF", "#008EA0FF")) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "black") + 
+  geom_text_repel(data = genes_m_filt[genes_m_filt$logFC_MFG*genes_m_filt$value < 0, ], aes(label = symbol)) + # Descoment to show the symbol
+  stat_smooth(method = "lm", se=F) + # Add Regression Line 
+  stat_regline_equation(aes(label = ..adj.rr.label..), show.legend = F)  + # Add R-Square
+#  stat_regline_equation(aes(label = ..rr.label..))  +
+  easy_labs(x = expression(paste("MFG age-related (", beta,")")), y = expression(paste("age-related (", beta, ")"))) +
+  easy_add_legend_title("Region") +
+  theme_classic()
+#dev.off()
+```
+
+```{r}
+sessionInfo()
+```
+

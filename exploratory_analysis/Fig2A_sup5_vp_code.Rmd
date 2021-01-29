@@ -1,0 +1,376 @@
+--
+title: "Looking at covariates"
+subtitle: ""
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: show
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> 255 samples (from 314) | 
+> Different brain regions from the same donor | 
+> Multi disease cohort. 
+
+Previous R script: metadata_merge.R by Katia Lopes. 
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+if(!require("variancePartition")) install.packages("variancePartition"); library("variancePartition")
+if(!require("limma")) install.packages("limma"); library("limma")
+if(!require("stats")) install.packages("stats"); library("stats")
+if(!require("ggfortify")) install.packages("ggfortify"); library("ggfortify")
+if(!require("gplots")) install.packages("gplots"); library("gplots")
+if(!require("factoextra")) install.packages("factoextra"); library("factoextra")
+if(!require("pamr")) BiocManager::install("pamr"); library("pamr")
+if(!require("DESeq2")) BiocManager::install("DESeq2"); library("DESeq2")
+if(!require("edgeR")) BiocManager::install("edgeR"); library("edgeR")
+if(!require("broom")) BiocManager::install("broom"); library("broom")
+if(!require("tidyverse")) BiocManager::install("tidyverse"); library("tidyverse")
+library("ggeasy")
+library(dplyr)
+library(ggsci)
+library(ggpubr)
+library(ggplot2)
+library(gridExtra)
+
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r folders, echo=TRUE}
+work_dir = "~/pd-omics/katia/Microglia/mic_255s/"
+expression_dir = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/expr_4brain_regions/"
+plots4paper = "/Users/katia/OneDrive/Documentos/MountSinai/Projects/Microglia/Figures4paper/"
+vp_by_tissue = "~/pd-omics/katia/Microglia/mic_255s/vp_files/"
+metadata_path = "~/pd-omics/katia/Microglia/mic_255s/metadata_files/"
+```
+
+## Input: metadata
+This metadata contains biological and technical covariates. 
+```{r input.metadata, echo=TRUE}
+load(paste0(metadata_path, "metadata_255filt_eng_29jun2020.Rdata"))
+# str(metadata3rd_pass)
+metadata<-metadata3rd_pass
+
+rownames(metadata) = metadata$donor_tissue
+```
+
+## HM: correlating the covariates 
+<div style="text-align: justify"> 
+"Evaluating the correlation between variables in a important part in interpreting variancePartition results. When comparing two **continuous** variables, Pearson
+correlation is widely used. But variancePartition includes **categorical** variables in the model as well. In order to accommodate the correlation between a continuous and a categorical variable, or two categorical variables we used canonical correlation analysis. **Canonical Correlation Analysis (CCA)** is similar to correlation between two vectors, except that CCA can accommodate matricies as well." Gabriel Hoffman. 
+</div>
+```{r hm_variance_partition, echo=TRUE, fig.width=10, fig.height=8, dpi=300}
+
+# These variables have zero variance so cannot be analyzed:
+#  infection_2weeks, glucocorticosteroids, batch
+
+metadata_alt1 = metadata %>% dplyr::select(-glucocorticosteroids) # These variables have zero variance so cannot be analyzed: glucocorticosteroids
+metadata_alt2 = metadata_alt1 %>% dplyr::select(-infection_2weeks) # These variables have zero variance so cannot be analyzed: infection_2weeks
+metadata_alt = metadata_alt2 %>% dplyr::select(-batch) # These variables have zero variance so cannot be analyzed: batch
+
+# names(metadata_alt) = tolower(names(metadata_alt))
+
+# Transforms characters columns in factors columns 
+indx <- sapply(metadata_alt, is.character)
+metadata_alt[indx] <- lapply(metadata_alt[indx], function(x) as.factor(x))
+metadata_alt$ph = as.numeric(as.character(metadata_alt$ph))
+#str(metadata_alt) #shows class for all columns 
+form <- as.formula(paste("", paste(colnames(metadata_alt), collapse=" + "), sep=" ~ ")) #form contains the design 
+C = canCorPairs(form, metadata_alt)
+
+# pdf(paste0(work_dir, "figures_pdf/canonical_hm.pdf"), width = 10, height = 8)
+plotCorrMatrix(C, margins = c(12,18))
+# dev.off()
+```
+
+## Variance Partition - 255 samples
+The covariates for the formula was chosen based on canonical correlation. We need to be careful to interpret this plot because here, we are using all samples together: same individual with different brain regions. 
+
+If the covariate have NAs in the column, we can't fit a model for Limma or Dream. The following covariates have NAs: **lane, benzodiapezines, opiates, autoimmune_diseases, smoking, infection_2weeks, alcohol_dependence_daily_use, ph, suicide_attempts and cause_of_death_categories**. 
+
+```{r vp_alls, echo=TRUE, fig.width=8, fig.height=6, dpi=300 }
+load(paste0(work_dir, "vp_files/varPart_tx_255s.RData"))
+
+vp <- sortCols( varPart_tx )
+# pdf(paste0(plots4paper, "VP_figures/vp_tec_bio_285s.pdf"), width=8, height=6)
+plotVarPart(vp) +
+  theme_classic() +
+  easy_remove_legend() + 
+  easy_rotate_x_labels(angle = 70, side = c("right"))
+# dev.off()
+
+```
+
+```{r vp_alls_bio, echo=TRUE, fig.width=4, fig.height=4, dpi=300 }
+# load(paste0(work_dir, "vp_files/varPart_tx_all.RData"))
+
+# vp <- sortCols( varPart_tx )
+
+vp_sel = vp[, c("donor_id", "cause_of_death_categories", "C1", "tissue", "C2", "C4", "ph","pmd_minutes", "age", "C3", "main_diagnosis", "sex", "Residuals")]
+
+colnames(vp_sel) <- (c(paste0("Individual\n(",round(mean(vp_sel$donor_id), 4)*100,"%)"), 
+          					   paste0("Cause of death\n(",round(mean(vp_sel$cause_of_death_categories), 4)*100,"%)"),
+          					   paste0("Ancestry - PC1\n(",round(mean(vp_sel$C1), 4)*100,"%)"),
+                       paste0("Region\n(",round(mean(vp_sel$tissue), 4)*100,"%)"), 
+                       paste0("Ancestry - PC2\n(",round(mean(vp_sel$C2), 4)*100,"%)"), 
+					             paste0("Ancestry - PC4\n(",round(mean(vp_sel$C4), 4)*100,"%)"),
+                       paste0("pH\n(",round(mean(vp_sel$ph), 4)*100,"%)"), 
+                       paste0("Post-mortem delay\n(",round(mean(vp_sel$pmd_minutes), 4)*100,"%)"), 
+                       paste0("Age\n(",round(mean(vp_sel$age), 4)*100,"%)"), 
+                       paste0("Ancestry - PC3\n(",round(mean(vp_sel$C3), 3)*100,"%)"),
+                       paste0("Diagnosis\n(",round(mean(vp_sel$main_diagnosis), 4)*100,"%)"), 
+                       paste0("Sex\n(",round(mean(vp_sel$sex), 4)*100,"%)"), 
+                       paste0("Residuals\n(",round(mean(vp_sel$Residuals), 4)*100,"%)")))
+
+# tissue.colors = pal_futurama()(8)[3:12] # Start with the color in the position 3 up to the position 12
+tissue.colors = colorRampPalette(c("#1A5354FF","white"))(13)
+
+  plotVarPart(vp_sel, ylab = "Variance explained (%)") +
+  theme_classic() +
+  geom_boxplot(width=0.1, outlier.colour = "black", outlier.size = 0.1, outlier.stroke = 0) +
+  easy_remove_legend() + 
+  scale_fill_manual(values = tissue.colors ) +
+  easy_rotate_x_labels(angle = 70, side = c("right"))
+
+```
+
+```{r vp_alls_tec, echo=TRUE, fig.width=4, fig.height=4, dpi=300 }
+# load(paste0(work_dir, "vp_files/varPart_tx_all.RData"))
+
+# vp <- sortCols( varPart_tx )
+
+vp_sel = vp[, c("picard_pct_mrna_bases", "picard_summed_mean", "picard_pct_ribosomal_bases", "picard_pct_pf_reads_aligned", "lane", "Residuals")]
+  
+colnames(vp_sel) <- (c(paste0("Pct of mRNA bases\n(",round(mean(vp_sel$picard_pct_mrna_bases), 4)*100,"%)"), 
+                       paste0("Mean Insert size\n(",round(mean(vp_sel$picard_summed_mean), 4)*100,"%)"), 
+                       paste0("Pct of ribosome\n(",round(mean(vp_sel$picard_pct_ribosomal_bases), 4)*100,"%)"), 
+                       paste0("Pct of aligned reads\n(",round(mean(vp_sel$picard_pct_pf_reads_aligned), 4)*100,"%)"), 
+                       paste0("Lane\n(",round(mean(vp_sel$lane), 4)*100,"%)"), 
+                       paste0("Residuals\n(",round(mean(vp_sel$Residuals), 4)*100,"%)")))
+
+# tissue.colors = c("#008EA0FF", "#8A4198FF", "#5A9599FF", "#FF6348FF", "#84D7E1FF",  NA)  
+tissue.colors = colorRampPalette(c("#ADE2D0FF","white"))(6)
+
+plotVarPart(vp_sel, ylab = "Variance explained (%)") +
+  theme_classic() +
+  geom_boxplot(width=0.1, outlier.colour = "black", outlier.size = 0.1, outlier.stroke = 0) +
+  easy_remove_legend() + 
+  scale_fill_manual(values = tissue.colors ) +
+  easy_rotate_x_labels(angle = 70, side = c("right"))
+
+```
+
+## Loading VP data by region 
+### MFG
+```{r load_by_tissue, fig.width=6, fig.height=4}
+load(paste0(vp_by_tissue, "varPart_tx_MFG.RData"))
+
+vp <- sortCols( varPart_tx )
+
+colnames(vp) <- (c(paste0("Pct of mRNA bases\n(",round(mean(vp$picard_pct_mrna_bases), 4)*100,"%)"),
+				   paste0("Ancestry - PC1\n(",round(mean(vp$C1), 4)*100,"%)"),
+				   paste0("Mean Insert size\n (",round(mean(vp$picard_summed_mean), 4)*100,"%)"),
+				   paste0("Ancestry - PC2\n(",round(mean(vp$C2), 4)*100,"%)"), 
+				   paste0("Pct of aligned reads\n(",round(mean(vp$picard_pct_pf_reads_aligned), 4)*100,"%)"),
+				   paste0("Pct of ribosome\n(",round(mean(vp$picard_pct_ribosomal_bases), 4)*100,"%)"),
+				   paste0("Ancestry - PC4\n(",round(mean(vp$C4), 3)*100,"%)"),
+				   paste0("pH\n(",round(mean(vp$ph), 4)*100,"%)"), 
+				   paste0("Lane\n(",round(mean(vp$lane), 4)*100,"%)"),
+				   paste0("Ancestry - PC3\n(",round(mean(vp$C3), 3)*100,"%)"),
+				   paste0("Age\n(",round(mean(vp$age), 4)*100,"%)"),
+				   paste0("Post-mortem delay\n(",round(mean(vp$pmd_minutes), 4)*100,"%)"), 
+				   paste0("Cause of death\n(",round(mean(vp$cause_of_death_categories), 4)*100,"%)"),
+				   paste0("Sex\n(",round(mean(vp$sex), 4)*100,"%)"), 
+				   paste0("Diagnosis\n(",round(mean(vp$main_diagnosis), 4)*100,"%)"), 
+				   paste0("Residuals\n(",round(mean(vp$Residuals), 4)*100,"%)")))
+
+tissue.colors = colorRampPalette(c("#FF6F00FF","white"))(16)
+
+p1 <- plotVarPart(vp, main = "MFG") +
+  theme_classic() +
+  geom_boxplot(width=0.1, outlier.colour = "black", outlier.size = 0.1, outlier.stroke = 0) +
+  easy_remove_legend() +
+  scale_fill_manual(values = tissue.colors ) +
+  easy_rotate_x_labels(angle = 70, side = c("right"))
+
+```
+
+### STG
+```{r load_by_tissue, fig.width=6, fig.height=4}
+load(paste0(vp_by_tissue, "varPart_tx_STG.RData"))
+
+vp <- sortCols( varPart_tx )
+
+colnames(vp) <- (c(paste0("Pct of mRNA bases\n(",round(mean(vp$picard_pct_mrna_bases), 4)*100,"%)"),
+				   paste0("Ancestry - PC1\n(",round(mean(vp$C1), 4)*100,"%)"),
+				   paste0("Ancestry - PC2\n(",round(mean(vp$C2), 4)*100,"%)"),
+				   paste0("Mean Insert size\n (",round(mean(vp$picard_summed_mean), 4)*100,"%)"),
+				   paste0("Pct of aligned reads\n(",round(mean(vp$picard_pct_pf_reads_aligned), 4)*100,"%)"),
+				   paste0("Pct of ribosome\n(",round(mean(vp$picard_pct_ribosomal_bases), 4)*100,"%)"),
+				   paste0("Ancestry - PC4\n(",round(mean(vp$C4), 3)*100,"%)"),
+				   paste0("Ancestry - PC3\n(",round(mean(vp$C3), 3)*100,"%)"),
+				   paste0("pH\n(",round(mean(vp$ph), 4)*100,"%)"), 
+				   paste0("Post-mortem delay\n(",round(mean(vp$pmd_minutes), 4)*100,"%)"), 
+				   paste0("Age\n(",round(mean(vp$age), 4)*100,"%)"),
+				   paste0("Lane\n(",round(mean(vp$lane), 4)*100,"%)"),
+				   paste0("Cause of death\n(",round(mean(vp$cause_of_death_categories), 4)*100,"%)"),
+				   paste0("Sex\n(",round(mean(vp$sex), 4)*100,"%)"), 
+				   paste0("Diagnosis\n(",round(mean(vp$main_diagnosis), 4)*100,"%)"), 
+				   paste0("Residuals\n(",round(mean(vp$Residuals), 4)*100,"%)")))
+
+tissue.colors = colorRampPalette(c("#C71000FF","white"))(16)
+
+p2 <- plotVarPart(vp, main = "STG") +
+  theme_classic() +
+  geom_boxplot(width=0.1, outlier.colour = "black", outlier.size = 0.1, outlier.stroke = 0) +
+  easy_remove_legend() +
+  scale_fill_manual(values = tissue.colors ) +
+  easy_rotate_x_labels(angle = 70, side = c("right"))
+
+# colorRampPalette(c("#C71000FF","white"))(6)
+# ggarrange(p1,p2)
+```
+
+```{r load_by_tissue, fig.width=6, fig.height=4}
+load(paste0(vp_by_tissue, "varPart_tx_THA.RData"))
+
+vp <- sortCols( varPart_tx )
+
+colnames(vp) <- (c(paste0("Pct of mRNA bases\n(",round(mean(vp$picard_pct_mrna_bases), 4)*100,"%)"),
+				   paste0("Ancestry - PC1\n(",round(mean(vp$C1), 4)*100,"%)"),
+				   paste0("Pct of aligned reads\n(",round(mean(vp$picard_pct_pf_reads_aligned), 4)*100,"%)"),
+				   paste0("Mean Insert size\n (",round(mean(vp$picard_summed_mean), 4)*100,"%)"),
+				   paste0("Ancestry - PC2\n(",round(mean(vp$C2), 4)*100,"%)"),
+				   paste0("Pct of ribosome\n(",round(mean(vp$picard_pct_ribosomal_bases), 4)*100,"%)"),
+				   paste0("Cause of death\n(",round(mean(vp$cause_of_death_categories), 4)*100,"%)"),
+				   paste0("Ancestry - PC3\n(",round(mean(vp$C3), 3)*100,"%)"),
+				   paste0("Ancestry - PC4\n(",round(mean(vp$C4), 3)*100,"%)"),
+				   paste0("Post-mortem delay\n(",round(mean(vp$pmd_minutes), 4)*100,"%)"),
+				   paste0("Age\n(",round(mean(vp$age), 4)*100,"%)"),
+				   paste0("pH\n(",round(mean(vp$ph), 4)*100,"%)"), 
+				   paste0("Sex\n(",round(mean(vp$sex), 4)*100,"%)"),
+				   paste0("Lane\n(",round(mean(vp$lane), 4)*100,"%)"),
+				   paste0("Diagnosis\n(",round(mean(vp$main_diagnosis), 4)*100,"%)"), 
+				   paste0("Residuals\n(",round(mean(vp$Residuals), 4)*100,"%)")))
+
+tissue.colors = colorRampPalette(c("#8A4198FF","white"))(16)
+
+p3 <- plotVarPart(vp, main = "THA") +
+  theme_classic() +
+  geom_boxplot(width=0.1, outlier.colour = "black", outlier.size = 0.1, outlier.stroke = 0) +
+  easy_remove_legend() +
+  scale_fill_manual(values = tissue.colors ) +
+  easy_rotate_x_labels(angle = 70, side = c("right"))
+
+colorRampPalette(c("#8A4198FF","white"))(6)
+
+```
+
+## SVZ 
+```{r load_by_tissue, fig.width=6, fig.height=4}
+load(paste0(vp_by_tissue, "varPart_tx_SVZ.RData"))
+
+vp <- sortCols( varPart_tx )
+
+colnames(vp) <- (c(paste0("Pct of mRNA bases\n(",round(mean(vp$picard_pct_mrna_bases), 4)*100,"%)"),
+				   paste0("Ancestry - PC1\n(",round(mean(vp$C1), 4)*100,"%)"),
+				   paste0("Pct of aligned reads\n(",round(mean(vp$picard_pct_pf_reads_aligned), 4)*100,"%)"),
+				   paste0("Mean Insert size\n (",round(mean(vp$picard_summed_mean), 4)*100,"%)"),
+				   paste0("Ancestry - PC2\n(",round(mean(vp$C2), 4)*100,"%)"),
+				   paste0("Pct of ribosome\n(",round(mean(vp$picard_pct_ribosomal_bases), 4)*100,"%)"),
+				   paste0("Ancestry - PC4\n(",round(mean(vp$C4), 3)*100,"%)"),
+				   paste0("Ancestry - PC3\n(",round(mean(vp$C3), 3)*100,"%)"),
+				   paste0("Age\n(",round(mean(vp$age), 4)*100,"%)"),
+				   paste0("Post-mortem delay\n(",round(mean(vp$pmd_minutes), 4)*100,"%)"),
+				   paste0("pH\n(",round(mean(vp$ph), 4)*100,"%)"), 
+				   paste0("Cause of death\n(",round(mean(vp$cause_of_death_categories), 4)*100,"%)"),
+				   paste0("Lane\n(",round(mean(vp$lane), 4)*100,"%)"),
+				   paste0("Sex\n(",round(mean(vp$sex), 4)*100,"%)"),
+				   paste0("Diagnosis\n(",round(mean(vp$main_diagnosis), 4)*100,"%)"), 
+				   paste0("Residuals\n(",round(mean(vp$Residuals), 4)*100,"%)")))
+
+tissue.colors = colorRampPalette(c("#008EA0FF","white"))(16) 
+
+p4 <- plotVarPart(vp, main = "SVZ") +
+  theme_classic() +
+  geom_boxplot(width=0.1, outlier.colour = "black", outlier.size = 0.1, outlier.stroke = 0) +
+  easy_remove_legend() +
+  scale_fill_manual(values = tissue.colors ) +
+  easy_rotate_x_labels(angle = 70, side = c("right"))
+
+colorRampPalette(c("#008EA0FF","white"))(6)
+
+```
+
+```{r load_by_tissue, fig.width=6, fig.height=4, eval=FALSE}
+load(paste0(vp_by_tissue, "varPart_tx_CC.RData"))
+
+vp <- sortCols( varPart_tx )
+
+colnames(vp) <- (c(paste0("Pct of mRNA bases\n(",round(mean(vp$picard_pct_mrna_bases), 4)*100,"%)"),
+                   paste0("Mean Insert size\n (",round(mean(vp$picard_summed_mean), 4)*100,"%)"),
+                   paste0("Pct of aligned reads\n(",round(mean(vp$picard_pct_pf_reads_aligned), 4)*100,"%)"),
+                   paste0("pH\n(",round(mean(vp$ph), 4)*100,"%)"), 
+                   paste0("Pct of ribosome\n(",round(mean(vp$picard_pct_ribosomal_bases), 4)*100,"%)"),
+                   paste0("Age\n(",round(mean(vp$age), 4)*100,"%)"), 
+                   paste0("Cause of death\n(",round(mean(vp$cause_of_death_categories), 4)*100,"%)"), 
+                   paste0("Diagnosis\n(",round(mean(vp$main_diagnosis), 4)*100,"%)"), 
+                   paste0("Sex\n(",round(mean(vp$sex), 4)*100,"%)"), 
+                   paste0("Residuals\n(",round(mean(vp$Residuals), 4)*100,"%)")))
+
+p5 <- plotVarPart(vp, main = "CC") +
+  theme_classic() +
+  geom_boxplot(width=0.1, outlier.colour = "black", outlier.size = 0.1, outlier.stroke = 0) +
+  easy_remove_legend() +
+  scale_fill_manual(values = c("#F493C0", "#F493C0", "#F493C0", "#F493C0","#FF95A8FF", "#EE4C97FF", "#EE4C97FF", "#EE4C97FF", "#EE4C97FF", "white")) +
+  #scale_fill_manual(values = tissue.colors ) +
+  easy_rotate_x_labels(angle = 70, side = c("right"))
+
+colorRampPalette(c("#EE4C97FF","white"))(6)
+
+```
+
+```{r fig.width=12, fig.height=8 }
+ggarrange(p1,p2,p3,p4, ncol=2, nrow = 2, labels = c("a", "b", "c", "d"))
+
+```
+

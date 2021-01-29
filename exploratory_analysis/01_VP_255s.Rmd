@@ -1,0 +1,256 @@
+---
+title: "Looking at covariates"
+subtitle: ""
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: show
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> 255 samples (from 314) | 
+> Different brain regions from the same donor | 
+> Multi disease cohort. 
+
+Previous R script: 01_expression_metadata_4reg.R by Katia Lopes. 
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+if(!require("variancePartition")) install.packages("variancePartition"); library("variancePartition")
+if(!require("limma")) install.packages("limma"); library("limma")
+if(!require("stats")) install.packages("stats"); library("stats")
+if(!require("ggfortify")) install.packages("ggfortify"); library("ggfortify")
+if(!require("gplots")) install.packages("gplots"); library("gplots")
+if(!require("factoextra")) install.packages("factoextra"); library("factoextra")
+if(!require("pamr")) BiocManager::install("pamr"); library("pamr")
+if(!require("DESeq2")) BiocManager::install("DESeq2"); library("DESeq2")
+if(!require("edgeR")) BiocManager::install("edgeR"); library("edgeR")
+if(!require("broom")) BiocManager::install("broom"); library("broom")
+if(!require("tidyverse")) BiocManager::install("tidyverse"); library("tidyverse")
+
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r folders, echo=TRUE}
+work_dir = "~/ad-omics/ricardo/tmp/3rd_pass_mic_258s/"
+expression_dir = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/expr_4brain_regions/"
+metadata_path = "~/pd-omics/katia/Microglia/mic_255s/metadata_files/"
+```
+
+## Input: metadata
+This metadata contains biological and technical covariates. 
+```{r input.metadata, echo=TRUE}
+load(paste0(metadata_path, "metadata_255filt_eng_29jun2020.Rdata"))
+# str(metadata3rd_pass)
+
+metadata <- metadata3rd_pass[, ! colnames(metadata3rd_pass) %in% c("C5", "C6", "C7", "C8", "C9", "C10")] 
+rownames(metadata) = metadata$donor_tissue
+```
+
+## HM: correlating the covariates 
+<div style="text-align: justify"> 
+"Evaluating the correlation between variables in a important part in interpreting variancePartition results. When comparing two **continuous** variables, Pearson
+correlation is widely used. But variancePartition includes **categorical** variables in the model as well. In order to accommodate the correlation between a continuous and a categorical variable, or two categorical variables we used canonical correlation analysis. **Canonical Correlation Analysis (CCA)** is similar to correlation between two vectors, except that CCA can accommodate matricies as well." Gabriel Hoffman. 
+</div>
+```{r hm_variance_partition, echo=TRUE, fig.width=10, fig.height=8, dpi=300}
+
+# These variables have zero variance so cannot be analyzed:
+#  infection_2weeks, glucocorticosteroids, batch
+
+metadata_alt1 = metadata %>% dplyr::select(-glucocorticosteroids) # These variables have zero variance so cannot be analyzed: glucocorticosteroids
+metadata_alt2 = metadata_alt1 %>% dplyr::select(-infection_2weeks) # These variables have zero variance so cannot be analyzed: infection_2weeks
+metadata_alt = metadata_alt2 %>% dplyr::select(-batch) # These variables have zero variance so cannot be analyzed: batch
+
+# names(metadata_alt) = tolower(names(metadata_alt))
+
+# Transforms characters columns in factors columns 
+indx <- sapply(metadata_alt, is.character)
+metadata_alt[indx] <- lapply(metadata_alt[indx], function(x) as.factor(x))
+metadata_alt$ph = as.numeric(as.character(metadata_alt$ph))
+#str(metadata_alt) #shows class for all columns 
+form <- as.formula(paste("", paste(colnames(metadata_alt), collapse=" + "), sep=" ~ ")) #form contains the design 
+C = canCorPairs(form, metadata_alt)
+
+# pdf(paste0(work_dir, "figures_pdf/canonical_hm.pdf"), width = 10, height = 8)
+plotCorrMatrix(C, margins = c(12,18))
+# dev.off()
+
+```
+
+```{r tissues.donor, eval=FALSE}
+### Number of tissues by donor 
+tissuesBydonor = rowSums(table(metadata_alt[,c("donor_id","tissue")]))
+createDT(as.data.frame(tissuesBydonor))
+```
+
+### Donors with 01 tissue 
+```{r donors_1tissue, echo=TRUE}
+sum(rowSums(table(metadata_alt[,c("donor_id","tissue")]))==1)
+```
+
+```{r donor.id_1tissue, echo=TRUE}
+donor1sample = names(which(rowSums(table(metadata_alt[,c("donor_id","tissue")]))>1))
+donor1sample
+```
+## Input expression 
+```{r expression, echo=TRUE}
+load(paste0(expression_dir, "Expression_filt_255s.Rdata")) 
+# dim(genes_counts_exp_3rd) # 19376   255
+```
+
+## VP: 255 samples
+The covariates for the formula was chosen based on canonical correlation. We need to be careful to interpret this plot because here, we are using all samples together: same individual with different brain regions. 
+
+If the covariate have NAs in the column, we can't fit a model for Limma or Dream. The following covariates have NAs: **lane, benzodiapezines, opiates, autoimmune_diseases, smoking, infection_2weeks, alcohol_dependence_daily_use, ph, C1-C4 from genotyping, suicide_attempts and cause_of_death_categories**. 
+```{r vp_alls, echo=TRUE, fig.width=8, fig.height=6, res=300 }
+library(doParallel)
+cl <- makeCluster(10)
+registerDoParallel(cl)
+
+# For categorical covariates you need to include the number 1. Example: (1|Status) + (1|Plate)
+metadata_alt$fastqc_total_sequences = scale(metadata_alt$fastqc_total_sequences)
+metadata_alt$star_uniquely_mapped = scale(metadata_alt$star_uniquely_mapped)
+metadata_alt$featurecounts_assigned = scale(metadata_alt$featurecounts_assigned)
+
+# form <- ~ (1|donor_id) + age + (1|tissue) + (1|lane) + (1|main_diagnosis) + (1|sex) + pmd_minutes + picard_pct_mrna_bases + picard_summed_mean + picard_pct_pf_reads_aligned + ph + picard_pct_ribosomal_bases + (1|cause_of_death_categories) + C1 + C2 + C3 + C4 + (1|suicide_attempts) + fastqc_total_sequences + (1|opiates) + (1|autoimmune_diseases) + star_uniquely_mapped + fastqc_percent_fails + featurecounts_assigned 
+
+form <- ~ (1|donor_id) + age + (1|tissue) + (1|lane) + (1|main_diagnosis) + (1|sex) + pmd_minutes + picard_pct_mrna_bases + picard_summed_mean + picard_pct_pf_reads_aligned + ph + picard_pct_ribosomal_bases + (1|cause_of_death_categories) + C1 + C2 + C3 + C4 
+
+varPart_tx <- suppressWarnings( fitExtractVarPartModel( genes_counts_voom_3rd, form, metadata_alt) )
+vp <- sortCols( varPart_tx )
+# plotPercentBars( vp[1:10,] ) Not applicable for dataset with different tissues from the same individual 
+
+save(varPart_tx, file = paste0(work_dir, "/vp_files/varPart_tx_255s.RData"))
+plotVarPart(vp) +
+  ggeasy::easy_rotate_x_labels(angle = 70, side = c("right"))
+```
+
+## VP: By tissue (255 samples) {.tabset .tabset-fade .tabset-pills} 
+
+We have tried to run including +0 in the formula (Vignette, page 19) but it didn't works because we have some donors with only one tissue. So, we can't fit a model for that. However, we can try to run separately by tissue. 
+
+```{r split.tissue, echo=TRUE}
+metadata_GFM = metadata_alt[metadata_alt$tissue=="MFG",]
+voom_GFM = genes_counts_voom_3rd[ , as.character(metadata_GFM$donor_tissue)]
+
+metadata_GTS = metadata_alt[metadata_alt$tissue=="STG",]
+voom_GTS = genes_counts_voom_3rd[ , as.character(metadata_GTS$donor_tissue)]
+
+metadata_SVZ = metadata_alt[metadata_alt$tissue=="SVZ",] 
+voom_SVZ = genes_counts_voom_3rd[ , as.character(metadata_SVZ$donor_tissue)]
+
+metadata_THA = metadata_alt[metadata_alt$tissue=="THA",] 
+voom_THA = genes_counts_voom_3rd[ , as.character(metadata_THA$donor_tissue)]
+
+save(metadata_alt, metadata_GFM, metadata_GTS, metadata_SVZ, metadata_THA,
+             voom_GFM, voom_GTS, voom_SVZ, voom_THA, file = paste0(work_dir, "metadata_exprBytissue_255s.Rdata"))
+```
+
+```{r vp_formBytissue, echo=TRUE }
+
+form <- ~ age + (1|lane) + (1|main_diagnosis) + (1|sex) + pmd_minutes + picard_pct_mrna_bases + picard_summed_mean + picard_pct_pf_reads_aligned + ph + picard_pct_ribosomal_bases + (1|cause_of_death_categories) + C1 + C2 + C3 + C4 
+
+```
+
+### MFG - Medial Frontal Gyrus {.tabset .tabset-fade .tabset-pills}
+```{r vp_gfm, echo=TRUE, fig.width=8, fig.height=6, res=300 }
+varPart_tx <- suppressWarnings( fitExtractVarPartModel( voom_GFM, form, metadata_GFM) )
+vp <- sortCols( varPart_tx )
+save(varPart_tx, file = paste0(work_dir, "vp_files/varPart_tx_MFG.RData"))
+
+plotVarPart(vp)+
+  ggeasy::easy_rotate_x_labels(angle = 70, side = c("right"))
+```
+
+### STG - Superior Temporal Gyrus {.tabset .tabset-fade .tabset-pills}
+```{r vp_gts, echo=TRUE, fig.width=8, fig.height=6, res=300 }
+varPart_tx <- suppressWarnings( fitExtractVarPartModel( voom_GTS, form, metadata_GTS) )
+vp <- sortCols( varPart_tx )
+save(varPart_tx, file = paste0(work_dir, "vp_files/varPart_tx_STG.RData"))
+
+plotVarPart(vp)+
+  ggeasy::easy_rotate_x_labels(angle = 70, side = c("right"))
+```
+
+### SVZ - Subventricular zone {.tabset .tabset-fade .tabset-pills}
+```{r vp_svz, echo=TRUE, fig.width=8, fig.height=6, res=300 }
+varPart_tx <- suppressWarnings( fitExtractVarPartModel( voom_SVZ, form, metadata_SVZ) )
+vp <- sortCols( varPart_tx )
+save(varPart_tx, file = paste0(work_dir, "vp_files/varPart_tx_SVZ.RData"))
+
+plotVarPart(vp) +
+  ggeasy::easy_rotate_x_labels(angle = 70, side = c("right"))
+```
+
+### THA - Thalamus {.tabset .tabset-fade .tabset-pills}
+```{r vp_tha, echo=TRUE, fig.width=8, fig.height=6, res=300 }
+varPart_tx <- suppressWarnings( fitExtractVarPartModel( voom_THA, form, metadata_THA) )
+vp <- sortCols( varPart_tx )
+save(varPart_tx, file = paste0(work_dir, "vp_files/varPart_tx_THA.RData"))
+
+plotVarPart(vp)+
+  ggeasy::easy_rotate_x_labels(angle = 70, side = c("right"))
+```
+
+## VP: 216 samples, European only 
+```{r vp_216s, echo=TRUE, fig.width=8, fig.height=6, dpi=300}
+eur_samples = read.table("~/pd-omics/katia/Microglia/mic_255s/samples_eqtl_90d.txt", header = F, stringsAsFactors = T)
+colnames(eur_samples) = c("eur_samples")
+
+metadata_alt_eur = metadata_alt[metadata_alt$donor_id %in% eur_samples$eur_samples ,]
+genes_counts_voom_3rd_eur = genes_counts_voom_3rd[, colnames(genes_counts_voom_3rd) %in% metadata_alt_eur$donor_tissue]
+
+form <- ~ (1|donor_id) + age + (1|tissue) + (1|lane) + (1|main_diagnosis) + (1|sex) + pmd_minutes + picard_pct_mrna_bases + picard_summed_mean + picard_pct_pf_reads_aligned + ph + picard_pct_ribosomal_bases + (1|cause_of_death_categories) + C1 + C2 + C3 + C4 
+
+varPart_tx <- suppressWarnings( fitExtractVarPartModel( genes_counts_voom_3rd_eur, form, metadata_alt_eur) )
+vp <- sortCols( varPart_tx )
+# plotPercentBars( vp[1:10,] ) Not applicable for dataset with different tissues from the same individual 
+
+save(varPart_tx, file = paste0(work_dir, "/vp_files/varPart_tx_eur_216s.RData"))
+plotVarPart(vp) +
+  ggeasy::easy_rotate_x_labels(angle = 70, side = c("right"))
+
+```
+
+```{r session, echo=TRUE}
+sessionInfo()
+```
+

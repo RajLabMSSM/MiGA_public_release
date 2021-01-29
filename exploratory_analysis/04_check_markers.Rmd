@@ -1,0 +1,120 @@
+---
+title: "Quality Control Analysis - after QC"
+subtitle: "Microglia data"
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> 255 samples (from 314) | 
+> Different brain regions from the same donor | 
+> Multi disease cohort. 
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+library(readxl) 
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(dplyr)
+library(tidyverse)
+library(ggsci)
+library(factoextra)
+library(venn)
+library(ggsci)
+library(amap)
+library(scales)
+library(ggeasy)
+library(ggtext)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r folders, echo=TRUE}
+expression_dir = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/expr_4brain_regions/"
+work_plots = "~/pd-omics/katia/scripts/GitHub_scripts/glia_omics/3rd_pass_mic_255s/"
+marker_folder = "~/pd-omics/katia/Microglia/markers_genes/"
+```
+
+## Gene markers
+```{r input_data4markers_sc, echo=TRUE}
+load(paste0(expression_dir, "Expression_filt_255s.Rdata"))
+
+markers_file = paste0(marker_folder, "markers.xlsx")
+markers = read_excel(markers_file, sheet = "markers_pilot", col_names = TRUE) 
+markers = as.data.frame(markers)
+
+marker_expression = merge(genes_tpm_exp_3rd, markers, by.x = 0, by.y = "ensembl", sort = F)
+# dim(marker_expression)
+# head(marker_expression)
+
+rownames(marker_expression) = marker_expression$gene_name
+cell_type = marker_expression$cell_type  # keep in same gene order 
+marker_expression$gene_name = NULL 
+marker_expression$Row.names = NULL
+marker_expression$cell_type = NULL
+
+marker_expression = as.matrix(log2(marker_expression + 1))
+
+```
+
+### Hm: from pilot list 
+```{r hm_pilot, echo=TRUE, fig.width=10, fig.height=6, dpi=300}
+# Create the heatmap annotation
+cell_type = as.factor(cell_type)
+# cell_type_colors <- data.frame(cell_type = levels(cell_type), color = I(brewer.pal(nlevels(cell_type), name = 'Dark2')))
+cell_type_colors <- data.frame(cell_type = levels(cell_type), color = pal_lancet('lanonc')(nlevels(cell_type)))
+cell_type_df = left_join(data.frame(cell_type = cell_type), cell_type_colors, by="cell_type")
+res <- unlist(lapply(split(cell_type_colors$color, cell_type_colors$cell_type), unlist))
+row_ha = rowAnnotation(`Cell Type` = as.factor(cell_type_df$cell_type), col = list(`Cell Type` = res), show_annotation_name = F)
+
+# pdf(paste0(work_plots, "HM_markers_255s.pdf"), width = 10, height = 6)
+colPalette <- colorRampPalette(rev(brewer.pal(10, "RdYlBu")))(256)
+Heatmap(marker_expression,
+        col = colPalette,
+        name = "log2(TPM+1)", # Legend title
+        cluster_rows = T,
+        #  row_names_gp = gpar(fontsize = 6), # Text size for row names)
+        show_column_dend = F, 
+        show_column_names = F, 
+        right_annotation = row_ha)
+#dev.off()
+```

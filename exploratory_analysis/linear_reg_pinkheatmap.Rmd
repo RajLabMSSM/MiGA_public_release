@@ -1,0 +1,240 @@
+---
+title: "Looking at covariates"
+subtitle: "Supp figure for the MiGA paper"
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: show
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> 255 samples (from 314) | 
+> Different brain regions from the same donor | 
+> Multi disease cohort. 
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+if(!require("variancePartition")) install.packages("variancePartition"); library("variancePartition")
+if(!require("limma")) install.packages("limma"); library("limma")
+if(!require("stats")) install.packages("stats"); library("stats")
+if(!require("ggfortify")) install.packages("ggfortify"); library("ggfortify")
+if(!require("gplots")) install.packages("gplots"); library("gplots")
+if(!require("factoextra")) install.packages("factoextra"); library("factoextra")
+if(!require("pamr")) BiocManager::install("pamr"); library("pamr")
+if(!require("DESeq2")) BiocManager::install("DESeq2"); library("DESeq2")
+if(!require("edgeR")) BiocManager::install("edgeR"); library("edgeR")
+if(!require("broom")) BiocManager::install("broom"); library("broom")
+if(!require("tidyverse")) BiocManager::install("tidyverse"); library("tidyverse")
+
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r folders, echo=TRUE}
+work_dir = "~/pd-omics/katia/Microglia/mic_255s/"
+expression_dir = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/expr_4brain_regions/"
+metadata_path = "~/pd-omics/katia/Microglia/mic_255s/metadata_files/"
+```
+
+## Input
+This metadata contains biological and technical covariates. 
+```{r input.metadata, echo=TRUE}
+load(paste0(expression_dir, "Expression_filt_255s.Rdata")) 
+# dim(genes_counts_exp_3rd) # 19376   255
+
+load(paste0(metadata_path, "metadata_255filt_eng_29jun2020.Rdata"))
+# str(metadata3rd_pass)
+
+metadata <- metadata3rd_pass
+
+metadata$cause_of_death_categories[metadata$cause_of_death_categories %in% NA] <- "Other"
+#table(metadata$cause_of_death_categories)
+metadata$C1 = metadata$C1 %>% replace_na(median(metadata$C1, na.rm = T))
+metadata$C2 = metadata$C2 %>% replace_na(median(metadata$C2, na.rm = T))
+metadata$C3 = metadata$C3 %>% replace_na(median(metadata$C3, na.rm = T))
+metadata$C4 = metadata$C4 %>% replace_na(median(metadata$C4, na.rm = T))
+
+```
+
+## HMs: PCA x covariates
+```{r pca.data, echo=TRUE}
+genes_counts_voom <- genes_counts_voom_3rd
+#pca_voom = prcomp(t(genes_counts_voom)) #Same PCA from Analysis_clean 
+pca_voom = prcomp(genes_counts_voom)
+# createDT(pca_voom$rotation[1:10, 1:5])
+pcva_voom_selec = pca_voom$rotation[, 1:15] #15 firsts PCs
+#autoplot(pca_voom)
+```
+
+### With p-values
+
+> **Linear regression** between the first 15 PCs and selected covariates. 
+> Colors = adj.r.square 
+> Numbers = p-values adjusted by Bonferroni.
+
+```{r pca.model, echo=TRUE, fig.width=12, fig.height=10, res=300}
+var <- get_pca_var(pca_voom) # description of PCs
+ind <- get_pca_ind(pca_voom) # PCs for individuals
+
+# To include our batch
+names(metadata) = tolower(names(metadata))
+# Transforms characters columns in factors columns 
+indx <- sapply(metadata, is.character)
+metadata[indx] <- lapply(metadata[indx], function(x) as.factor(x))
+metadata$ph = as.numeric(as.character(metadata$ph))
+#str(metadata) #shows class for all columns 
+
+#Covariates
+covariates = c( "diagnosis",
+                "main_diagnosis",
+                "tissue",
+                "sex",
+                "age",
+                "pmd_minutes",
+                "ph",
+                "cause_of_death_categories",
+                "smoking",
+                "alcohol_dependence_daily_use",
+                "suicide_attempts",
+                "autoimmune_diseases",
+                "infection_2weeks",
+                "opiates",
+                "benzodiazepines",
+                "psychopharmaca",
+                "featurecounts_percent_assigned",
+                "featurecounts_assigned",
+                "picard_pct_ribosomal_bases",
+                "picard_pct_mrna_bases",
+                "picard_pct_pf_reads_aligned",
+                "picard_summed_median",
+                "picard_summed_mean",
+                "picard_percent_duplication",
+                "star_uniquely_mapped_percent",
+                "star_uniquely_mapped",
+                "fastqc_percent_duplicates",
+                "fastqc_percent_gc",
+                "fastqc_avg_sequence_length",
+                "fastqc_percent_fails",
+                "fastqc_total_sequences",
+                "lane",
+                "batch")
+
+
+matrix_rsquared = matrix(NA, nrow = length(covariates), ncol = 15) #Number of factors
+matrix_pvalue = matrix(NA, nrow = length(covariates), ncol = 15)
+
+for (x in 1:length(covariates)){
+  for (y in 1:15){
+    matrix_rsquared[x,y] <- summary( lm(var$cor[,y] ~ metadata[,covariates[x]]) )$adj.r.squared
+    matrix_pvalue[x,y] <- glance(summary( lm(var$cor[,y] ~ metadata[,covariates[x]]) ))$p.value #To insert pvalues in the heatmap
+  }
+}
+
+rownames(matrix_rsquared) = covariates
+rownames(matrix_pvalue) = covariates 
+
+matrix_pvalue = matrix(p.adjust(as.vector(as.matrix(matrix_pvalue)), method='bonferroni'),ncol=ncol(matrix_pvalue))
+matrix_pvalue = formatC(matrix_pvalue, format = "e", digits = 2)
+
+# png(paste0(work_dir, "LinearReg_15pcs_covariates.png"), width = 10, height = 10, res = 600, units = "in")
+# pdf(paste0(work_dir, "LinearReg_15pcs_covariates.pdf"), width = 10, height = 10)
+heatmap.2(as.matrix(matrix_rsquared), col = colorRampPalette(RColorBrewer::brewer.pal(6,"RdPu"))(40),
+          scale="none",
+          cellnote = matrix_pvalue,
+          notecol="black",
+          notecex = 0.6,
+          margins=c(10,12), # ("margin.Y", "margin.X")
+          trace='none', 
+          #dendrogram=c("row"),
+          density.info='none', 
+          denscol="black",
+          breaks = seq(0, 1, length.out = 41),
+          Colv = FALSE,
+          xlab = "PCs",
+          ylab = "Covariates",
+          key = TRUE,
+          keysize = 1,
+          key.title = "teste",
+          key.xlab = "Adjusted R2",
+          key.ylab = NULL,
+          key.xtickfun = NULL,
+          key.ytickfun = NULL,
+          key.par=list()
+#          main = "Linear regression between PCs and covariates"
+) 
+#while (!is.null(dev.list()))  dev.off()
+# dev.off()
+# Colored by adj.r.squared
+# Numbers inside cell = pvalues
+```
+
+### Clean heatmap
+```{r pca.model2, echo=TRUE, fig.width=12, fig.height=10, res=300}
+# png(paste0(work_dir, "LinearReg_15pcs_covariates_clean.png"), width = 8, height = 10, res = 600, units = "in")
+# pdf(paste0(work_dir, "LinearReg_15pcs_covariates_clean.pdf"), width = 8, height = 10)
+heatmap.2(as.matrix(matrix_rsquared), col = colorRampPalette(RColorBrewer::brewer.pal(6,"RdPu"))(40),
+          scale="none",
+#          cellnote = matrix_pvalue,
+          notecol="black",
+          notecex = 0.6,
+          margins=c(10,12), # ("margin.Y", "margin.X")
+          trace='none', 
+          dendrogram=c("row"),
+          density.info='none', 
+          denscol="black",
+          breaks = seq(0, 1, length.out = 41),
+          Colv = FALSE,
+          xlab = "PCs",
+          ylab = "Covariates",
+          keysize = 1,
+          key.title = "teste",
+          key.xlab = "Adjusted R2"
+#          main = "Linear regression between sva_network and covariates"
+) 
+
+# dev.off()
+# Colored by adj.r.squared
+
+```
+
+```{r session, echo=TRUE}
+sessionInfo()
+```
+
