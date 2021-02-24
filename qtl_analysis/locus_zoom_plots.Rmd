@@ -1,0 +1,273 @@
+---
+title: "Locus Zoom Plots"
+author: "Jack Humphrey"
+date: "17/09/2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: hide
+    dev: 'svg'
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(patchwork)
+library(ggrepel)
+library(ggrastr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+# read in data
+all_res_file <- "data/COLOC/all_microglia_coloc_res.1kgp3_ld.tsv.gz"
+
+if( !file.exists(all_res_file)){
+  
+  all_ld_files <- list.files("data/COLOC/LD", full.names = TRUE, pattern = "coloc_results.snp.1kgp3_ld.tsv.gz")
+  
+  eqtl_ld <- all_ld_files[ !grepl("sQTL", all_ld_files)]
+  
+  sqtl_ld <- all_ld_files[ grepl("sQTL", all_ld_files)]
+  
+  names(eqtl_ld) <- apply(str_split_fixed(basename(eqtl_ld), "_", 7)[,c(4,5)], MARGIN = 1, FUN = function(x){ paste(x, collapse = "_")})
+  
+  names(sqtl_ld) <- apply(str_split_fixed(basename(sqtl_ld), "_", 7)[,c(5,6)], MARGIN = 1, FUN = function(x){ paste(x, collapse = "_")})
+  
+  sqtl_ld_res <- map_df(sqtl_ld, ~{read_tsv(.x) %>% mutate(Locus = as.character(Locus)) }, .id = "GWAS" ) %>% mutate(QTL = "sQTL")
+  eqtl_ld_res <- map_df(eqtl_ld, ~{read_tsv(.x) %>% mutate(Locus = as.character(Locus))}, .id = "GWAS" ) %>% mutate(QTL = "eQTL")
+  
+  all_ld_res <- bind_rows(sqtl_ld_res, eqtl_ld_res)
+  
+  all_ld_res <- rename(all_ld_res, Gene = gene, SNP = snp)
+  
+  all_ld_res$geneid <- map_chr(str_split(all_ld_res$Gene, ":"), ~{ .x[ length(.x) ] })
+  all_ld_res$geneid <- str_split_fixed(all_ld_res$geneid, "\\.", 2)[,1]
+  
+  # have separate junction column
+  all_ld_res$QTL_junction <- map_chr(str_split(all_ld_res$Gene, ":"), ~{ paste0(.x[1], ":", .x[2], "-", .x[3])  })
+  
+  gene_meta <- read_tsv("~/GENCODE/gencode.v30.tx2gene.tsv.gz") %>% 
+    janitor::clean_names() %>%
+    select(genename, geneid) %>% distinct()
+  
+  # remove tags
+  gene_meta$geneid <- str_split_fixed(gene_meta$geneid, "\\.", 2)[,1]
+  
+  # match on gene symbols
+  all_ld_res$genename <- gene_meta$genename[ match(all_ld_res$geneid, gene_meta$geneid) ]
+  
+  # coalesce - if no gene symbol found use ID
+  all_ld_res$QTL_Gene <- coalesce(all_ld_res$genename, all_ld_res$geneid)
+  
+  # add geneid back to make sure
+  all_ld_res$QTL_Ensembl <- gene_meta$geneid[match(all_ld_res$QTL_Gene, gene_meta$genename)] 
+  
+  # make junction NA if eQTL
+  all_ld_res$QTL_junction <- ifelse(all_ld_res$QTL == "sQTL", all_ld_res$QTL_junction, ".")
+  
+  
+  write_tsv(all_ld_res, path = "data/COLOC/all_microglia_coloc_res.1kgp3_ld.tsv.gz")
+}else{
+  all_ld_res <- read_tsv(all_res_file)
+}
+
+## fine-mapped SNPs
+all_finemap <- data.table::fread("data/Fine_Mapping/brian/microgliaQTL_multiGWAS.finemapping_merged.labelled.tsv")
+
+## coloc
+
+all_coloc <- read_tsv("data/microglia_qtls_coloc_filtered_harmonised.tsv.gz")
+
+disease_fancy_table <- 
+  tibble(
+    disease = c("AD", "PD", "BPD", "SCZ", "ALS", "MS"),
+    disease_full = c("Alzheimer's Disease", "Parkinson's Disease", "Bipolar Disorder", "Schizophrenia", "Amyotrophic Lateral Sclerosis", "Multiple Sclerosis" )
+  )
+
+gwas_fancy_table <- 
+  tibble(
+    Dataset = c("Nalls23andMe_2019", "Marioni_2018", "Jansen_2018", "Lambert_2013", "Kunkle_2019", "IMSGC_2019", "Ripke_2014", "Stahl_2019", "Daner_2020", "Nicolas_2018"),
+    GWAS_full = c("Nalls et al 2019", "Marioni et al 2018", "Jansen et al 2018", "Lambert et al 2013", "Kunkle et al 2019", "IMSGC et al 2019", "Ripke et al 2014", "Stahl et al 2019", "Daner et al 2020", "Nicolas et al 2018")
+  )
+
+all_coloc <- all_coloc %>%
+    left_join(disease_fancy_table, by = "disease") %>%
+    left_join(gwas_fancy_table, by = "Dataset")
+
+```
+
+```{r}
+
+
+
+# for a given Locus in a given GWAS and QTL gene
+# produce LocusZoom-like plots for the GWAS and QTL
+# plot the 2 distributions against each other
+locus_zoom_plot <- function(qtl, locus, gene, gwas, label = TRUE, layout = "shiny"){
+  stopifnot(qtl %in% c("eQTL", "sQTL"))
+  stopifnot(gwas %in% unique(all_ld_res$GWAS))
+  ld_loc <- filter(all_ld_res, GWAS == gwas)#, Dataset == gwas )
+  
+  coloc_loc <- filter(all_coloc, Dataset == gwas, gene == Gene, Locus == locus, type == qtl) 
+  stopifnot(nrow(coloc_loc) == 1)
+  
+  coloc_h4 <- coloc_loc$PP.H4.abf
+  
+  
+  coloc_h4 <- signif(coloc_h4, digits = 2)
+  stopifnot(length(coloc_h4) > 0)
+  
+  if(!(all(is.na(ld_loc$Dataset)))){
+    ld_loc <- filter(ld_loc, Dataset == gwas)
+  }
+  
+  stopifnot(locus %in% ld_loc$Locus)
+  ld_loc <- filter(ld_loc, Locus == locus, Gene == gene) #%>%
+   # rename(SNP = snp)
+  
+  finemap_loc <- 
+    filter(all_finemap, Dataset == gwas, Locus == locus, GWAS == gwas, !is.na(label) ) 
+  
+  ld_loc$label_name <- ifelse(ld_loc$SNP %in% finemap_loc$SNP, ld_loc$SNP, "")
+  
+  # add in lead QTL SNP
+  lead_qtl_snp <- filter(ld_loc, SNP == coloc_loc$QTL_SNP)
+  if(nrow(lead_qtl_snp) == 0){return(NULL)}  
+  ld_loc$label_name <- ifelse(ld_loc$SNP == lead_qtl_snp$SNP, ld_loc$SNP, ld_loc$label_name)
+  
+  # lead GWAS SNP - from LD - not from COLOC as COLOC P value is sometimes the combined P rather than the raw GWAS P (Ripke)
+  if( gwas == "Ripke_2014"){
+  lead_gwas_snp <- arrange(ld_loc, gwas.pvalues) %>% head(1)
+  }else{ lead_gwas_snp <- coloc_loc %>%
+     select(SNP = GWAS_SNP, gwas.pvalues = GWAS_P, pos = GWAS_pos_hg19)
+  }
+  # 
+ # return(ld_loc)
+  colour_guide_string <- bquote(R^2~with~.(lead_gwas_snp$SNP))
+  
+  
+  compare_plot <-
+    ld_loc %>%
+    ggplot(aes(x = -log10(qtl.pvalues), y = -log10(gwas.pvalues), colour = lead_gwas_ld)) + 
+    scale_colour_distiller(palette = "Spectral", limits = c(0,1), breaks = c(0,1), labels = c(0,1) ) +
+    labs(x = -log[10]~(P[QTL]), y = expression(-log[10]~(P[GWAS])), colour = colour_guide_string, title = paste0("COLOC PP H4 = ", coloc_h4)) + 
+    theme_classic() + 
+    theme(legend.position = "bottom") +
+    guides(colour = guide_colourbar(barwidth = 3, ticks = FALSE, barheight = 0.5, label.position = "top",label.vjust = -1) ) +
+    scale_x_continuous(expand = c(0, 0), limits = c(0, -log10(lead_qtl_snp$qtl.pvalues) + 1)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, -log10(lead_gwas_snp$gwas.pvalues) + 1))
+  
+  if(label == TRUE){
+    compare_plot <- compare_plot + 
+      geom_text_repel(data = filter(ld_loc, gwas.pvalues < 0.1 & qtl.pvalues < 0.1), 
+                    aes(label = label_name), colour = "black", force = 10, size = 2.5, box.padding = unit(0.5, "lines"), min.segment.length = 0 )
+  }
+  
+  compare_plot <- compare_plot + rasterise(geom_point(size = 0.8), dpi = 300) 
+  
+  #return(compare_plot)
+  gwas_plot <-
+    ld_loc %>%
+    ggplot(aes(x = pos / 1e6, y = -log10(gwas.pvalues), colour = lead_gwas_ld)) + 
+    scale_colour_distiller(palette = "Spectral" ) +
+    labs(y = expression(-log[10]~(P)), x = "", colour = colour_guide_string, title = coloc_loc$disease_full, subtitle = coloc_loc$GWAS_full ) + 
+    geom_text_repel(data = lead_gwas_snp, aes(label = SNP), colour = "black", direction = "x", hjust = 0, nudge_x = 0.3, size = 2.5  ) +
+    rasterise(geom_point(size = 0.8), dpi = 300) + 
+    theme_classic() +
+    guides(colour = FALSE) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, -log10(lead_gwas_snp$gwas.pvalues) + 1))
+  
+  qtl_plot <-
+    ld_loc %>%
+    ggplot(aes(x = pos / 1e6, y = -log10(qtl.pvalues), colour = lead_gwas_ld)) + 
+    scale_colour_distiller(palette = "Spectral" ) +
+    labs(y = -log[10]~(P), x = "Mbp", colour = colour_guide_string, title = paste0("MiGA ", qtl, " - ", gene)) + 
+    geom_text_repel(data = lead_qtl_snp, aes(label = SNP), colour = "black", direction = "x", hjust = 0, nudge_x = 0.3, size  = 2.5 ) +
+    rasterise(geom_point(size = 0.8), dpi = 300) + 
+    theme_classic() +
+    guides(colour = FALSE) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, -log10(lead_qtl_snp$qtl.pvalues) + 1))
+  
+  if( layout == "shiny"){
+    multiplot <- 
+    (gwas_plot + qtl_plot + plot_layout(nrow = 2)) / (plot_spacer() + compare_plot + plot_spacer() + plot_layout(ncol=1, heights = c(0.1, 0.9, 0)) ) +  
+    #plot_annotation(subtitle = paste0("Locus: ", locus, " Gene: ", gene), subsubtitle = paste0("GWAS: ", gwas) ) +
+    plot_layout( ncol = 2, widths = c(1,1.1))  &
+    theme(axis.text = element_text(colour = "black"), plot.title = element_text(size = 10), plot.subtitle = element_text(size = 7.5)) 
+  }
+  
+  if(layout == "figure"){
+     multiplot <- 
+    gwas_plot + qtl_plot + compare_plot + plot_layout(nrow = 1, ncol =3)
+  }
+  
+  return(multiplot)
+}
+
+usp <- locus_zoom_plot(qtl = "eQTL", locus = "ECHDC3", gene = "USP6NL", gwas = "Marioni_2018", layout = "figure")
+
+#ggsave(plot = usp, filename = "plots/USP6NL_Marioni_locus_zoom.pdf", width = 6, height = 4.5)
+```
+
+
+```{r}
+
+# bin1 <- locus_zoom_plot(qtl = "eQTL", locus = "BIN1", gene = "BIN1", gwas = "Kunkle_2019")
+# 
+# ggsave(plot = bin1, filename = "plots/BIN1_Kunkle_locus_zoom.pdf", width = 6, height = 4.5)
+# #locus_zoom_plot(qtl = "eQTL", locus = "PICALM", gene = "PICALM", gwas = "Kunkle_2019")
+# 
+# #locus_zoom_plot(qtl = "eQTL", locus = "ECHDC3", gene = "USP6NL", gwas = "Kunkle_2019")
+
+usp <- locus_zoom_plot(qtl = "eQTL", locus = "ECHDC3", gene = "USP6NL", gwas = "Marioni_2018", layout = "figure")
+
+ggsave(plot = usp, filename = "plots/USP6NL_Marioni_locus_zoom.pdf", width = 9, height = 3)
+
+p2ry <- locus_zoom_plot(qtl = "eQTL", locus = "MED12L", gene = "P2RY12", gwas = "Nalls23andMe_2019", layout = "figure")
+
+ggsave(plot = p2ry, filename = "plots/P2RY12_Nalls_locus_zoom.pdf", width = 9, height = 3)
+
+
+```
+
+
+```{r}
+all_loci <- all_coloc %>% 
+  dplyr::filter(! Dataset %in% c("Nicolas_2018","Daner_2020", "Wray_2018"), QTL == "MiGA eQTL", PP.H4.abf > 0.5 ) %>% 
+  dplyr::filter(Gene != "") %>%  
+  dplyr::select(Dataset, Locus, Gene, disease) %>% 
+  distinct() %>% 
+  filter(paste(Dataset, Locus) %in% 
+  paste(all_finemap$Dataset, all_finemap$Locus)) %>%
+  split(.$disease)#filter(Gene %in% all_coloc$Gene)
+
+```
+
+
+
+```{r}
+map_locus_zoom <- function(dataset, qtl_type = "eQTL"){
+ plots <- map(1:nrow(dataset), ~{
+   df <- dataset[.x,]
+   print(df)
+  p <- locus_zoom_plot(qtl = qtl_type, locus = df$Locus, gene = df$Gene, gwas = df$Dataset, layout = "figure")
+  return(p)
+ })
+ return(plots)
+}
+
+plots <- map_locus_zoom(all_loci$AD[1:4,])
+
+plots
+
+```
+
+
+```{r}
+#locus_zoom_plot(qtl = "eQTL", gene = "PCCB", locus = "42", gwas = "Ripke_2014")
+```
+

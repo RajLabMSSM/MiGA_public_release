@@ -1,0 +1,91 @@
+---
+title: "qvalue sharing"
+author: "Jack Humphrey"
+date: "09/06/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+```{r}
+
+eGene_numbers <- data.frame( 
+  set = c("Microglia MFG", "Microglia STG", "Microglia THA", "Microglia SVZ", "Microglia all regions"),
+  n = c(267, 769, 196, 94, 1239),
+  stringsAsFactors = FALSE
+)
+
+ext_datasets <- data.frame(
+  target_name = c( "Microglia Young",  "Monocytes Fairfax", "Monocytes MyND",  "DLPFC ROSMAP" ),
+  alt_target_name = c("Microglia\n(Young)", "Monocytes\n(Fairfax)", "Monocytes\n(Navarro)", "Brain - DLPFC\n(ROSMAP)")
+)
+
+
+qvalues<- read_tsv("data/all_qvalue_merged.0.1.tsv")
+
+qvalue_matrix <- 
+  qvalues %>% 
+  mutate(pi1 = ifelse(is.na(pi1), yes = 1, no = pi1)) %>%
+  mutate(pi1 = ifelse( source_name == target_name, yes = 1, no = pi1)) %>%
+  tidyr::spread(key = target_name, value = pi1) %>% 
+  column_to_rownames(var = "source_name")
+
+
+qvalues_to_plot <-
+  qvalues %>%
+  mutate(pi1 = ifelse(is.na(pi1), yes = 1, no = pi1)) %>%
+  mutate(pi1 = round(pi1, digits = 2)) %>%
+  mutate(pi1 = ifelse( source_name == target_name, yes = 1, no = pi1))
+
+
+# Regions with themselves
+qvalues_region <- filter(qvalues_to_plot, target_name %in% c("Microglia_STG", "Microglia_MFG", "Microglia_THA", "Microglia_SVZ")) %>%
+  mutate(source_name = gsub("_", " ", source_name), target_name = gsub("_", " ", target_name))
+
+qvalues_region %>%
+  ggplot(aes(x= source_name, y = target_name, fill = pi1, label = pi1)) + geom_tile() + geom_text() +
+  labs(x = "discovery", y = "replication") +
+  scale_fill_distiller(expression(pi[1]), type = "div", palette = "RdYlBu", limits = c(0,1) ) +
+  #theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  coord_flip() +
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete( expand = c(0,0))
+
+
+# Regions with external data
+qvalues_external <- filter(qvalues_to_plot, !target_name %in% c("Microglia_STG", "Microglia_MFG", "Microglia_THA", "Microglia_SVZ", "Microglia_all_regions")) %>%
+  mutate(source_name = gsub("_", " ", source_name), target_name = gsub("_", " ", target_name)) %>%
+  left_join(eGene_numbers, by = c("source_name" = "set")) %>%
+  mutate(source_name = gsub("Microglia ", "", source_name)) %>%
+  mutate(source_name = ifelse(source_name == "all regions", yes = "MASHR\nshared eQTL", no = source_name)) %>%
+  mutate(source_name = paste0(source_name, "\n(", n, ")" ))
+
+
+#external_order <- ext_datasets$alt_name
+
+p_ext <- 
+  qvalues_external %>%
+  left_join(ext_datasets, by = "target_name") %>%
+  mutate(alt_target_name = factor(alt_target_name, levels = ext_datasets$alt_target_name)) %>%
+  ggplot(aes(x= source_name, y = alt_target_name, fill = pi1, label = pi1)) + geom_tile() + geom_text() +
+  labs(x = "Discovery", y = "Replication") +
+  scale_fill_distiller(expression(pi[1]), type = "div", palette = "RdYlBu", limits = c(0,1) ) +
+  #theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  coord_flip() +
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete( expand = c(0,0)) +
+  geom_vline(xintercept = 1.5, size = 1) +
+  theme(axis.text = element_text(colour = "black"), axis.ticks = element_line(colour = "black"))
+
+p_ext
+
+ggsave(plot = p_ext, filename = c("plots/qvalue_external_data.pdf"), width = 6, height = 4)
+
+
+
+
+```
+

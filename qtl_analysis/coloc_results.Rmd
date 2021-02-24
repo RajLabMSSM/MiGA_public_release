@@ -1,0 +1,974 @@
+---
+title: "COLOC visualisation"
+author: "Jack Humphrey"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    code_folding: hide
+    dev: 'svg'
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, echo = FALSE, message = FALSE)
+library(tidyverse)
+library(ggrepel)
+library(patchwork)
+
+```
+
+
+Read in COLOC eQTL results
+
+create separate disease plots for Daner and Stahl GWAS results.
+
+
+```{r}
+# coloc_summary_file <- "data/all_COLOC_summary_results.tsv.gz"
+# coloc_sum <- read_tsv(coloc_summary_file)
+
+coloc_res_file <- "data/COLOC/all_COLOC_results_merged_H4_0_no_LD.tsv.gz"
+coloc_res <- read_tsv(coloc_res_file)
+
+# harmonise Locus IDs with Fine-Mapping
+
+# MS - Brian used different locus names in MS for fine-mapping, use a key
+ms_locus_key <- read_tsv("data/MS_GWAS_locus_key.txt")
+coloc_res$Locus_Brian <- ms_locus_key$Locus_Brian[ match(coloc_res$locus, ms_locus_key$Locus)]
+coloc_res$locus <- coalesce(coloc_res$Locus_Brian, coloc_res$locus)
+coloc_res$Locus_Brian <- NULL
+
+# Stahl - remove "*" and gsub "," to "-"
+coloc_res$locus <- gsub("\\*", "", gsub(",", "-", coloc_res$locus))
+
+# Nalls PD - 5 loci were skipped by Brian because they didn't pass QC
+coloc_res <- filter(coloc_res, !locus %in% c("DDRGK1", "SEMA4A", "GXYLT1", "FGD4", "ZNF608"))
+
+
+# use simplified dataset names
+qtl_name_table <- tibble(
+  QTL = c("Microglia_all_regions", "Microglia_all_regions_sQTL", "Microglia_Young", "Monocytes_MyND", "Monocytes_sQTL_MyND", "Monocytes_Fairfax", "DLPFC_ROSMAP"),
+  QTL_name = c("MiGA eQTL", "MiGA sQTL", "Young eQTL", "MyND eQTL", "MyND sQTL", "Fairfax eQTL", "ROSMAP eQTL")
+)
+
+coloc_res <- left_join(coloc_res, qtl_name_table, by = "QTL") %>%
+  mutate(QTL = coalesce(QTL_name, QTL)) %>%
+  select(-QTL_name)
+
+
+cell_type_datasets <- c("MiGA eQTL", "MiGA sQTL", "Young eQTL", "MyND eQTL", "MyND sQTL", "Fairfax eQTL", "ROSMAP eQTL")
+microglia_datasets <- c("Microglia_STG",  "Microglia_MFG", "Microglia_THA", "Microglia_SVZ", "Microglia_sQTL_STG", "Microglia_sQTL_MFG", "Microglia_sQTL_THA", "Microglia_sQTL_SVZ")
+
+
+cell_type_df <- data.frame(QTL = c(cell_type_datasets, microglia_datasets), cell_type = c("Microglia", "Microglia", "Microglia", "Monocytes", "Monocytes", "Monocytes", "Brain", rep("Microglia",8)), stringsAsFactors = FALSE)
+
+coloc_res <- left_join(coloc_res, cell_type_df, by = "QTL")
+
+coloc_res <- filter(coloc_res, !GWAS %in% c("Daner_2020", "Wray_2018", "Nicolas_2018" ) )
+
+
+
+table(coloc_res$GWAS)
+table(coloc_res$QTL)
+coloc_res %>% select(GWAS, locus) %>% distinct() %>% group_by(GWAS) %>% tally()
+coloc_res %>% select(disease, locus) %>% distinct() %>% group_by(disease) %>% tally()
+
+```
+
+
+
+
+# Assess Lead SNP distance and LD
+
+There are some potentially spurious COLOCs arising when the lead GWAS SNP is far too far from the lead QTL SNP for there to be a single plausible variant.
+
+Use ensembl biomart to get SNPs positions of all GWAS and QTL lead SNPs which colocalise at 0.5 or greater.
+
+In addition I have pairwise 1000 Genomes LD for the GWAS SNP and lead QTL SNP. How often is the LD predictive of the distance and vice versa?
+
+eQTLs - tests all SNPs 1MB either side of the TSS for association for gene expression
+sQTLs - tests all SNPs within 100kb either side of the centre of the intron cluster for association with intron usage.
+
+Therefore is it fair to put in separate SNP distance thresholds for e and s QTLs?
+
+```{r fig.width = 10, fig.height = 10}
+# 
+# high_coloc <- filter(coloc_res, PP.H4.abf >= 0.5)
+# 
+# 
+# snp_list <- unique( c(high_coloc$GWAS_SNP, high_coloc$QTL_SNP))
+# snp_list <- snp_list[!is.na(snp_list)]
+# 
+# snp_meta_file <- "data/coloc_snp_meta.tsv"
+# 
+# if(!file.exists(snp_meta_file) ){
+#   #library(biomaRt)
+#   n_bins <- 10
+#   snp_split <- split(snp_list, f = ntile(snp_list, n = n_bins))
+#   
+#   snp_mart = biomaRt::useMart("ENSEMBL_MART_SNP",
+#                      dataset="hsapiens_snp",
+#                      host =  "grch37.ensembl.org")
+#   # View(listFilters(snp_mart))
+#   # View(listAttributes(snp_mart))
+#   
+#   
+#   
+#   snp_results <- 
+#     map_df( 1:n_bins, ~{
+#       print(.x)
+#     biomaRt::getBM(snp_mart, filters="snp_filter",
+#                                 values=snp_split[.x],
+#                                 attributes=c("refsnp_id","chr_name", "chrom_start","chrom_end"
+#                                             ) )
+#     })
+#   
+#   snp_meta <- dplyr::select(snp_results, snp = refsnp_id, chr = chr_name, start = chrom_start, end = chrom_end) %>%
+#     mutate( chr = paste0("chr",chr))
+#   
+#   chrs <- paste0("chr", 1:22)
+#   
+#   snp_meta <- filter(snp_meta, chr %in% chrs)
+#   
+#   write_tsv(snp_meta, path = snp_meta_file)
+# }
+
+#snp_meta
+
+coloc_res$SNP_distance <- abs( coloc_res$QTL_pos - coloc_res$GWAS_pos)
+
+## read in LD
+
+coloc_ld <- read_tsv("data/COLOC/all_COLOC_results_merged_H4_0.5_with_LD.tsv.gz")
+
+coloc_res$LD <- coloc_ld$LD[ match( paste(coloc_res$GWAS_SNP, coloc_res$QTL_SNP), paste(coloc_ld$GWAS_SNP, coloc_ld$QTL_SNP ) )]
+
+# plot SNP distances
+# 
+# filter(coloc_res, !is.na(SNP_distance), PP.H4.abf > 0.5) %>%
+#   ggplot(aes(x = PP.H4.abf, y = log10(SNP_distance))) + 
+#   geom_point(aes(colour = type)) + 
+#   geom_hline(yintercept = log10(2e5))
+# 
+
+distances <-filter(coloc_res, !is.na(SNP_distance)) 
+# 
+# table(distances$SNP_distance < 2e5, distances$PP.H4.abf > 0.5)
+# 
+# #filter(distances, disease == "AD", PP.H4.abf > 0.5)  %>% View()
+# 
+# 
+# # distance distributions per GWAS nad QTL
+# filter(distances, PP.H4.abf > 0.5, QTL %in% cell_type_datasets )  %>% 
+#   ggplot(aes(y = log10(SNP_distance), x = QTL, colour = disease, group = disease) ) + 
+#   geom_point( position = position_jitterdodge(jitter.height= 0, jitter.width = 0.2 )) + coord_flip() + 
+#   geom_hline(yintercept = log10(5e5), linetype = 3)
+# 
+# # per locus within a GWAS
+# filter(distances, PP.H4.abf > 0.5, QTL %in% cell_type_datasets, disease == "MS")  %>% 
+#     ggplot(aes(y = log10(SNP_distance), x = locus, colour = QTL, group = QTL) ) + 
+#   geom_point( position = position_jitterdodge(jitter.height= 0, jitter.width = 0.2 )) + coord_flip() + 
+#   geom_hline(yintercept = log10(5e5), linetype = 3)
+#   #geom_point( position = position_jitterdodge(jitter.height= 0, jitter.width = 0.2 )) + coord_flip()
+# 
+# distances %>%
+#   filter(disease == "SCZ", PP.H4.abf > 0.5) %>%
+#   ggplot(aes(x = LD, y = log10(SNP_distance), colour = type )) + geom_point()
+# 
+# distances %>%
+#   filter( QTL %in% cell_type_datasets, !disease %in% c("MDD", "ALS")) %>%
+#   filter(PP.H4.abf > 0.5) %>%
+#   group_by(disease, QTL) %>%
+#   summarise( n = n(), close = sum(SNP_distance < 5e5)) %>%
+#   mutate( prop = close / n) %>%
+#   ggplot(aes(x = QTL, y = prop)) + geom_col() + facet_wrap(~disease) +
+#   coord_flip() +
+#   ylim(0,1) +
+#   labs(title = "Out of all COLOCs with H4 > 0.5,in how many are\nthe lead GWAS and the lead QTL SNP within 500kb?")
+# 
+# distances %>%
+#   filter( QTL %in% cell_type_datasets, !disease %in% c("MDD", "ALS")) %>%
+#   filter(PP.H4.abf > 0.5) %>%
+#   group_by(disease, QTL) %>%
+#   summarise( n = n(), close = sum(SNP_distance < 1e5)) %>%
+#   mutate( prop = close / n) %>%
+#   ggplot(aes(x = QTL, y = prop)) + geom_col() + facet_wrap(~disease) +
+#   coord_flip() +
+#   ylim(0,1) +
+#   labs(title = "Out of all COLOCs with H4 > 0.5,in how many are\nthe lead GWAS and the lead QTL SNP within 100kb?")
+```
+
+
+```{r}
+
+
+distances %>%
+  ggplot(aes(x = log10(SNP_distance), y = LD)) + geom_point() + geom_hline(yintercept = 0.1) + geom_smooth(method = "lm")
+
+distances %>%
+  filter( QTL %in% cell_type_datasets, !disease %in% c("MDD", "ALS")) %>%
+  filter(PP.H4.abf > 0.5, !is.na(LD)) %>%
+  group_by(disease, QTL) %>%
+  summarise( n = n(), close = sum(LD > 0.01 )) %>%
+  mutate( prop = close / n) %>%
+  ggplot(aes(x = QTL, y = prop)) + geom_col() + facet_wrap(~disease) +
+  coord_flip() +
+  #ylim(0,1) +
+  labs(title = "Out of all COLOCs with H4 > 0.5,in how many are\nthe lead GWAS and the lead QTL SNP in LD with R > 0.1?")
+
+# what's so funny about sQTLs?
+distances %>%
+  ggplot(aes(x = LD, y = log10(SNP_distance), colour = type)) + geom_point() + facet_wrap(~type)
+table(distances$type, distances$LD < 0.1)
+
+table(distances$type, distances$SNP_distance > 1e5)
+
+```
+
+Filtering on SNP-SNP distance or LD retains almost all AD and PD colocalisations but removes up to 90% of MS, BPD and SCZ colocalisations.
+
+This holds true for both e and s QTLs, despite the larger number of sQTLs colocalising in the non-neurodegenerative diseases.
+
+I now filter colocalisations so that:
+
+- for eQTLs, the top eQTL SNP must be within 500kb of the top GWAS SNP, or the two SNPs must be in LD with R > 0.1
+- for sQTLs, the top sQTL SNP must be within 100kb of the top GWAS SNP, or the two SNPs must be in LD with R > 0.1
+
+
+# Summarising COLOC results
+
+I was previously using the SNP-level COLOC P4 to assess whether colocalisation has occured. 
+
+Instead I should be using the summary-level COLOC H4. Once I filter on that, then I should apply the SNP-distance and LD filters using the top SNPs for QTL and GWAS for each locus-gene.
+
+
+```{r}
+# # Use MASHR-defined significant QTLs
+mashr_qtls <- read_tsv("data/MASHR/mash_lfsr_5per.txt") #microglia_mashr_shared_5percent_snp_genes.txt.gz")
+mashr_qtls$gene_snp <- gsub("_s", ":rs", mashr_qtls$mash_id)
+
+#mashr_qtls$snp_gene <- paste0(mashr_qtls$snp, ":", mashr_qtls$genename)
+coloc_res$gene_snp <- paste0(coloc_res$QTL_Ensembl, ":", coloc_res$QTL_SNP)
+
+coloc_res$mashr_lsfr <- coloc_res$gene_snp %in% mashr_qtls$gene_snp
+
+
+# create distance & LD filter
+coloc_res <- mutate(coloc_res, distance_filter = case_when( 
+  type == "eQTL" & SNP_distance < 5e5 | (!is.na(LD) & LD >= 0.1 ) ~ "PASS",
+  type == "sQTL" & SNP_distance < 1e5 | (!is.na(LD) & LD >= 0.1) ~ "PASS"
+) )
+
+# take top QTL SNP for each locus-gene
+# match on summary-level COLOC results
+top_qtl_snps <- 
+  coloc_res %>%
+  filter( QTL %in% c(cell_type_datasets, microglia_datasets) ) %>% 
+  group_by(disease, locus, QTL_Gene, type, QTL) %>%
+  summarise( QTL_P = min(QTL_P)) %>%
+  left_join(coloc_res) %>%
+  select( -starts_with("PP.H")) 
+#%>%
+  
+#left_join(coloc_sum)
+
+
+# this picks the top QTL for a given Gene in a disease - so when you have multiple disease GWAS with the same locus it picks the best locus (PP4)
+# for sQTLs where you have multiple clusters per gene, it picks the best cluster (PP4)
+best_per_locus <- 
+  coloc_res %>%
+  filter( QTL %in% c(cell_type_datasets, microglia_datasets) ) %>% 
+  group_by(disease, locus, QTL_Gene, type, QTL) %>%
+  summarise( PP.H4.abf = max(PP.H4.abf)) %>%
+  left_join(coloc_res) %>%
+  select( disease, GWAS,locus, GWAS_SNP, QTL_SNP, QTL_Beta, QTL_Gene, type, QTL, PP.H4.abf, cell_type, QTL_P, GWAS_P, SNP_distance, LD, mashr_lsfr) %>%
+  distinct()
+
+
+best_per_locus_filtered <- 
+  coloc_res %>%
+  filter(distance_filter == "PASS") %>%
+  filter( QTL %in% c(cell_type_datasets, microglia_datasets) ) %>% 
+  group_by(disease, locus, QTL_Gene, type, QTL) %>%
+  summarise( PP.H4.abf = max(PP.H4.abf)) %>%
+  left_join(coloc_res) %>%
+  select( disease, GWAS,locus, GWAS_SNP, QTL_SNP, QTL_Gene, QTL_Ensembl, QTL_junction, type, QTL, PP.H4.abf, cell_type, QTL_P, QTL_Beta, GWAS_P, SNP_distance, LD, mashr_lsfr) %>%
+  distinct()
+
+
+# output all microglia colocalisations that pass the distance filter
+mg_coloc_filtered <- 
+  coloc_res %>%
+  filter(distance_filter == "PASS") %>%
+  filter( QTL %in% c("MiGA eQTL", "MiGA sQTL"))
+
+write_tsv(mg_coloc_filtered, path = "data/microglia_qtls_coloc_filtered.tsv")
+
+
+# write out all filtered QTLs (best per locus) for downstream work
+outfile <- best_per_locus_filtered %>% filter( PP.H4.abf > 0.5)
+write_tsv(outfile, path = "data/colocalised_qtls_pp_0.5_filtered.tsv")
+
+# Supplementary table for paper
+supp_table <- coloc_res %>%
+  filter( distance_filter == "PASS") %>%
+  select(-mashr_lsfr, -distance_filter, -gene_snp)
+
+write_tsv(supp_table, path = here::here("tables/COLOC_supp_table_all_results.tsv.gz"))
+
+# just 0.5 at up - in case the full results are too large
+supp_table_0.5 <- coloc_res %>%
+  filter( distance_filter == "PASS", PP.H4.abf >= 0.5) %>%
+  select(-mashr_lsfr, -distance_filter, -gene_snp)
+
+write_tsv(supp_table_0.5, path = here::here("tables/COLOC_supp_table_results_0.5.tsv.gz"))
+
+
+```
+
+
+MASHR meta-analysis compared to METASOFT
+
+```{r}
+
+# are MASHR-selected eQTLs stronger METASOFT P-values?
+best_per_locus_filtered %>% 
+  filter(QTL == "Microglia_all_regions") %>% 
+  ggplot(aes(x = mashr_lsfr, y = -log10(QTL_P))) + 
+  geom_boxplot() + 
+  ggpubr::stat_compare_means(method = "wilcox")
+
+
+best_per_locus_filtered %>% 
+  filter(QTL == "Microglia_all_regions", PP.H4.abf > 0.5 ) %>%
+  ggplot(aes(x = PP.H4.abf, y = -log10(QTL_P))) + 
+  geom_point(aes(colour = mashr_lsfr)) + 
+  #facet_wrap(~mashr_lsfr) + 
+  theme_bw() +
+  labs( y = "-log10(METASOFT QTL P)", title = "QTL SNPs coloured by whether they are MASHR LSFR 5% in at least 1 region")
+
+
+best_per_locus_filtered %>% 
+  filter( QTL %in% cell_type_datasets, PP.H4.abf > 0.5) %>%
+  ggplot(aes(x = PP.H4.abf, y = -log10(QTL_P))) + geom_point() +
+  facet_wrap(~QTL, scales = "free") + geom_smooth(method = "lm")
+
+#+ geom_hline(yintercept = -log10(0.05))
+
+```
+
+
+## Summary counts
+
+For each disease GWAS - or union of GWAS, of the total number of loci, how many have at least 1 COLOC with H4 > 0.5, H4 > 0.8 and H4 > 0.9?
+
+```{r fig.width = 14, fig.height = 14 }
+
+# count the number of unique loci in each GWAS
+# this will probably be incorrect for some of them
+n_loci <- 
+  coloc_res %>% 
+  select(disease, locus) %>%
+  distinct() %>%
+  group_by(disease) %>%
+  summarise( n_loci = n() )
+
+locus_ratio_plot <- function(input, return_table = FALSE){
+  to_plot <- 
+  input  %>%
+  filter( QTL_P < 0.05) %>%
+  filter(!disease %in% c("ALS", "MDD")) %>%
+  group_by( disease,locus, QTL) %>%
+  summarise( PP.H4.abf = max(PP.H4.abf)) %>%
+  filter( QTL %in% cell_type_datasets) %>%
+  group_by( disease, QTL) %>%
+  summarise( 
+             h4_0.5 = sum(PP.H4.abf >= 0.5 & PP.H4.abf < 0.7), 
+             h4_0.8 = sum(PP.H4.abf >= 0.7 & PP.H4.abf < 0.9),
+             h4_0.9 = sum(PP.H4.abf >= 0.9)
+             ) %>%
+  gather( key = "h4_bin", value = "n_h4", -disease, -QTL) %>%
+  left_join(n_loci, by = "disease") %>%
+  mutate( prop_h4 = n_h4 / n_loci) %>%
+  ungroup() %>%
+  left_join(cell_type_df, by = "QTL") %>%
+  mutate( disease = factor(disease, levels = c("AD", "PD", "BPD", "MDD", "SCZ", "MS"))) %>%
+  mutate( disease_label = paste0( disease, "\nN = ", n_loci)) %>%
+  mutate( QTL = factor(QTL, levels = rev(cell_type_datasets)) ) %>%
+  mutate( cell_type = factor(cell_type, levels = c("Microglia", "Monocytes", "Brain")))
+
+  # create named vector of labels
+  disease_labels <- select(to_plot, disease, disease_label) %>% distinct() #%>% ungroup() %>% spread(key = "disease", value = "disease_label") %>% unlist()
+
+  if(return_table == TRUE){
+    df <- to_plot %>%
+      select(disease, QTL, h4_bin, n_h4, n_loci) %>%
+      spread(key = h4_bin, value = n_h4) %>%
+      knitr::kable()
+    return(df)
+  }
+  
+  to_plot %>%
+  ggplot(aes(x = QTL)) + 
+  #geom_col(aes(y = n_loci), fill = "white") + 
+  geom_col(aes(y = prop_h4, alpha = h4_bin, fill = cell_type)) +
+  facet_grid(disease~., labeller = labeller(disease = disease_labels)) + 
+  coord_flip() +
+  theme_classic() +
+  scale_alpha_manual( values = c(0.3,0.6,1), labels = c("[0.5, 0.7]", "[0.7, 0.9]", "[0.9, 1]")) +
+      theme(strip.text.y = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), #panel
+        #strip.text.y = element_text(angle = 0, face = "bold",vjust = 1),strip.placement = "inside",
+            legend.position = c("top"),legend.direction = "horizontal",legend.box = "vertical", legend.box.just = "right", # legend.key.size = unit(0.01,units = "npc"),
+          strip.background = element_blank() ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),  expand = c(0,0), limits = c(0,0.55)) +
+  labs(alpha = "COLOC H4", fill = "QTLs", x = "", y = "Proportion of loci with at least 1 colocalization") +
+  geom_text(data = disease_labels, aes(label = disease_label), x = 6.5, y = 0.5 ) +
+    scale_fill_manual( values = c(Microglia = "darkorange1", Monocytes = "seagreen3", Brain = "royalblue3"))
+}
+
+
+locus_ratio_plot(best_per_locus) + locus_ratio_plot( best_per_locus_filtered ) + labs(title = "SNP distance and LD filter applied")
+
+
+filtered_locus_ratio <- locus_ratio_plot( best_per_locus_filtered )
+
+dir.create("plots/COLOC/")
+
+ggsave(plot = filtered_locus_ratio, filename = "plots/COLOC/coloc_locus_ratio_filtered.pdf", width = 4, height = 14)
+
+locus_ratio_plot(best_per_locus_filtered, return_table = TRUE)
+
+locus_ratio_plot( best_per_locus_filtered )
+```
+
+
+
+## Sharing of colocalised genes
+
+Plot the genes that are shared between pairs of QTL datasets across all 5 diseases.
+
+```{r fig.width = 6, fig.height = 14}
+
+disease_colours <- c(
+  "AD" = "deepskyblue",
+  "PD" = "darkblue",
+  "SCZ" = "red",
+  "BPD" = "firebrick",
+  #"MDD" = "orange",
+  "MS" = "goldenrod"
+)
+
+disease_levels <- c("AD", "PD", "BPD", "SCZ", "MS")
+
+pairwise_h4_cor <- function(q1, q2, facet = "disease"){
+  
+  to_plot <- 
+    best_per_locus_filtered %>%
+    filter( !disease %in% c("ALS", "MDD") ) %>%
+    filter( QTL %in% c(q1, q2)) %>%
+    filter(PP.H4.abf >= 0.5) %>%
+    mutate( disease = factor(disease, levels = disease_levels)) %>%
+    select(disease,locus, QTL_Gene, QTL,  PP.H4.abf) %>%
+    filter(!grepl("HLA", QTL_Gene)) %>% 
+    ungroup() %>%
+    mutate(QTL = ifelse(QTL == q1, "q1", "q2")) %>%
+    group_by( disease, QTL_Gene, QTL ) %>%
+    summarise( H4 = max(PP.H4.abf)) %>%
+    spread(key = "QTL", value = "H4") #%>%
+    # dplyr::mutate( verdict = case_when(
+    #   (q1 > 0.5 & q2 > 0.5) | (q1 > 0.8 & q2 > 0.8) ~ "shared",
+    #   ( (q1 > 0.5 & q2 < 0.5) | (q1 > 0.5 & is.na(q1) ) ) ~ "q1",
+    #   ( (q2 > 0.5 & q1 < 0.5) | (q2 > 0.5 & is.na(q2)) ) ~ "q2",
+    #   TRUE ~ "null"
+    # ))
+      
+  plot <- 
+    to_plot %>%
+    ggplot(aes(x = q1, y = q2)) + 
+    #geom_point(      data = filter(to_plot, verdict != "shared"), aes( x = q1, y = q2), colour = "grey") +
+    #geom_point(      data = filter(to_plot, verdict == "shared"), aes(x = q1, y = q2, colour = disease) ) +  
+    geom_text_repel( aes(x = q1, y = q2, label = QTL_Gene), size = 2.2) +
+    geom_point( aes(colour = disease) ) +  
+    labs(x = q1, y = q2) +
+    #guides(alpha = FALSE) +
+    #geom_hline(yintercept = 0.5, linetype = 3) +
+    #geom_vline(xintercept = 0.5, linetype = 3) +
+    xlim(0.5,1) + 
+    ylim(0.5, 1) +
+    theme_classic() +
+    scale_colour_manual("Disease", values = disease_colours)
+ 
+  if(facet == "disease"){
+    plot <- plot + facet_wrap(~disease)
+
+  }
+  return(plot)
+}
+
+
+sharing_multiplot <- 
+  pairwise_h4_cor( q2 = "Young eQTL", q1 = "MiGA eQTL", facet = "none") + guides(colour = FALSE) +
+  pairwise_h4_cor( q2 = "MyND eQTL", q1 = "MiGA eQTL", facet = "none") + guides(colour=guide_legend(nrow=2,byrow=TRUE) ) +
+  pairwise_h4_cor( q2 = "ROSMAP eQTL", q1 = "MiGA eQTL", facet = "none") + guides(colour = FALSE) +
+  pairwise_h4_cor( q1 = "MiGA sQTL", q2 = "MyND sQTL", facet = "none") + guides(colour = FALSE) +
+  plot_layout(ncol = 1, guides = 'collect') & theme(legend.position = "top") #, legend.box = "vertical")#, legend.direction = "horizontal", legend.box.margin=margin(t=0,r = 0, b = 0, l = 0 ))
+  
+sharing_multiplot
+
+ggsave(plot = sharing_multiplot,filename = "plots/COLOC/coloc_sharing_multiplot.pdf", width = 4.5, height = 14 )
+
+#locus_ratio_plot + sharing_multiplot + plot_layout(ncol = 2)
+
+```
+
+Upset plots of Colocalised QTLs (PP4 > 0.5) between Monocytes, Microglia and DLPFC
+
+```{r}
+
+coloc_upset <- function( QTL_data, H4_min = 0.5, diseases = NA, type = "eQTL"){
+  df <- 
+    best_per_locus_filtered %>%
+    filter( disease != "ALS") %>%
+    filter(QTL %in% QTL_data,type == type)
+  
+  if( !is.na(diseases)){
+    df <- filter(df, disease %in% diseases)
+  }
+  
+  df <- 
+    df %>%
+    select(disease,locus, QTL_Gene, QTL, PP.H4.abf) %>%
+    mutate(locus_gene = paste0(locus, "_", QTL_Gene)) %>%
+    group_by( disease,locus_gene, QTL ) %>%
+    summarise( H4 = max(PP.H4.abf)) %>%
+  filter( H4 >= H4_min) %>%
+  ungroup()
+  
+  #return(df)
+  
+  
+  to_upset <- df %>%
+  split(.$QTL) %>%
+  map( "locus_gene")
+  
+  UpSetR::upset(UpSetR::fromList(to_upset), order.by = "degree" )
+
+}
+
+# coloc_upset(QTL_data = c("Monocytes_MyND", "Microglia_all_regions", "DLPFC_ROSMAP"), H4_min = 0.5)
+# 
+# coloc_upset(QTL_data = c("Monocytes_MyND", "Microglia_all_regions", "DLPFC_ROSMAP"), H4_min = 0.8)
+# 
+# coloc_upset(QTL_data = c("Monocytes_MyND", "Monocytes_Fairfax", "Microglia_all_regions", "Microglia_Young", "DLPFC_ROSMAP"), H4_min = 0.5)
+# 
+# coloc_upset(QTL_data = c("Monocytes_MyND", "Monocytes_Fairfax"), H4_min = 0.5)
+# 
+# 
+# coloc_upset(QTL_data = c("Monocytes_sQTL_MyND", "Microglia_all_regions_sQTL"), H4_min = 0.8)
+# 
+# 
+
+
+```
+
+# Jaccard distances between each QTL set - take the intersection of loci at a threshold divided by the union.
+
+```{r fig.width = 12, fig.height = 6}
+
+coloc_jaccard <- function( QTL_data, H4_min = 0.5, diseases = NA, type = "eQTL"){
+  df <- 
+    best_per_locus_filtered %>%
+    filter( disease != "ALS") %>%
+    filter(QTL %in% QTL_data,type == type)
+  
+  if( !is.na(diseases)){
+    df <- filter(df, disease %in% diseases)
+  }
+  
+  df <- 
+    df %>%
+    select(disease,locus, QTL_Gene, QTL, PP.H4.abf) %>%
+    mutate(locus_gene = paste0(locus, "_", QTL_Gene)) %>%
+    group_by( disease,locus_gene, QTL ) %>%
+    summarise( H4 = max(PP.H4.abf)) %>%
+  filter( H4 >= H4_min) %>%
+  ungroup()
+  
+  #return(df)
+  
+  
+  to_jac <- df %>%
+  split(.$QTL) %>%
+  map( "locus_gene")
+
+  #return(to_jac)
+  
+  var_names <- expand.grid(names(to_jac), names(to_jac), stringsAsFactors = FALSE )
+  
+  res <- map2_df(var_names$Var1, var_names$Var2, ~{
+    int <- length(intersect(to_jac[[.x]], to_jac[[.y]]) ) 
+    
+    uni <- length( to_jac[[.x]] )
+    #uni <- length( union(to_jac[[.x]], to_jac[[.y]]))
+    
+    jac <- int / uni
+    
+    tibble( int = int, uni = uni, jac = jac)
+    #/ c( unique(x[[.x]], x[[.y]]))
+  })
+  
+  res <- bind_cols(var_names, res)
+  
+  return(res)
+}
+
+
+
+p1 <- coloc_jaccard(QTL_data = cell_type_datasets, H4_min = 0.5) %>%
+    mutate(jac = ifelse(jac == 1, NA, jac)) %>%
+  mutate(jac_label = round(jac, digits = 2)) %>%
+  ggplot(aes(x = Var1, y = Var2, fill = jac, label = jac_label)) + 
+  geom_tile() + geom_text() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, colour = "black") ) +
+  labs(title = "H4 ≥ 0.5 ", x = "Discovery", y = "Replication") +
+  scale_fill_distiller("Proportion\nsharing", type = "seq", palette = "RdYlBu", limits = c(0, 1) ) +
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete( expand = c(0,0)) +
+  theme(axis.text.y = element_text(colour = "black"))
+
+p2 <- coloc_jaccard(QTL_data = cell_type_datasets, H4_min = 0.7) %>%
+    mutate(jac = ifelse(jac == 1, NA, jac)) %>%
+  mutate(jac_label = round(jac, digits = 2)) %>%
+  ggplot(aes(x = Var1, y = Var2, fill = jac, label = jac_label)) + 
+  geom_tile() + geom_text() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, colour = "black") ) +
+  labs(title = "H4 ≥ 0.7 ", x = "Discovery", y = "Replication") +
+  scale_fill_distiller("Proportion\nsharing", type = "div", palette = "RdYlBu", limits = c(0, 1) ) +
+  scale_x_discrete(expand = c(0,0)) + scale_y_discrete( expand = c(0,0)) +
+  theme(axis.text.y = element_text(colour = "black"))
+
+p1 + p2 + plot_layout(ncol = 2,guides = "collect") + plot_annotation(tag_levels = "A") & 
+  theme(plot.tag = element_text(size = 16, face = "bold"))
+```
+
+
+
+# Compare eQTL effect sizes
+
+between Young and our Microglia
+between MyND monocytes and our microglia 
+
+etc...
+
+```{r}
+#best
+```
+
+
+
+## Disease plots 
+
+Plot each locus-gene COLOC H4
+
+```{r }
+# plots the maximum H4 found at this locus for each QTL Gene / Locus pair
+disease_plot <- function(disease_choice, disease_title, gwas_subtitle, datasets = cell_type_datasets, min_h4 = 0.7, which_GWAS = NULL, which_locus = NULL, which_data = NULL, distance_filter = TRUE, QTL_focus = NULL){
+  input_data <- best_per_locus
+  
+  if( distance_filter == TRUE){
+    input_data  <- best_per_locus_filtered
+  }
+  
+  # only plot locus/gene combinations with a minimum H4 in at least 1 QTL dataset
+  qtl_genes <-   
+    input_data %>%
+    filter( PP.H4.abf > min_h4) %>%
+    filter(QTL %in% datasets) %>%
+    select(disease,locus, QTL, QTL_Gene, PP.H4.abf) %>%
+    mutate(locus_gene = paste(locus, QTL_Gene))
+  
+  # if you just want to plot genes with min H4 in a particular set of QTL datasets
+  if( !is.null(QTL_focus) ){
+    qtl_genes <- filter(qtl_genes, QTL %in% QTL_focus)
+  }  
+
+  # if plotting individual locus then don't only present best H4 per locus - present all loci if found in different GWAS
+  if( !is.null(which_locus)  ){
+    input_data <- 
+      coloc_res %>% 
+      group_by(QTL, GWAS, GWAS_SNP, locus, disease, QTL_Gene, type, cell_type) %>%
+      summarise( PP.H4.abf = max(PP.H4.abf)) 
+  }
+  
+  if( !is.null(which_data) ){
+    input_data <- which_data
+  }
+  
+
+  
+  to_plot <- 
+    input_data %>%
+    filter( disease == disease_choice) %>%
+    filter(QTL %in% datasets) %>%
+    #filter(PP.H4.abf > 0.8) %>%
+    filter( paste(locus,QTL_Gene) %in% qtl_genes$locus_gene ) %>%
+    mutate( QTL = factor(QTL, levels = datasets)) %>%
+    
+    mutate( cell_type = factor(cell_type, levels = c("Microglia", "Monocytes", "Brain"))) %>%
+    mutate(h4 = round(PP.H4.abf, digits = 2)) %>%
+    select(GWAS, GWAS_SNP, locus, QTL_Gene, QTL, h4,cell_type, type) %>%
+    distinct() # remove any junctions with identically high numbers
+  
+  
+  # if you want to specify a particular locus
+  if(!is.null(which_locus) ){
+    stopifnot( any( which_locus %in% to_plot$locus ) )
+    to_plot <- filter(to_plot, locus %in% which_locus) 
+  }
+  
+  
+  # if you need to specify a GWAS
+  if(!is.null(which_GWAS) ){
+    stopifnot( any( which_GWAS %in% to_plot$GWAS ) )
+    
+    to_plot <- filter(to_plot, GWAS %in% which_GWAS) 
+    if( length(which_GWAS) > 1){
+      to_plot$locus <- paste0(to_plot$locus, ": ", to_plot$GWAS)
+    }
+  }
+  if(disease_choice %in% c("SCZ", "MS", "BPD")){ to_plot$locus<- to_plot$GWAS_SNP}
+  
+  p <- to_plot %>%
+    ggplot(aes( y = QTL_Gene, x = QTL, label = h4)) + 
+    geom_point(aes(size = h4, colour = cell_type, alpha = h4, shape = type ), position = position_nudge(x = -0.2)) + 
+    geom_text(nudge_x = 0.2, size = 3) + 
+    theme_bw() +
+    theme(strip.text.y = element_text(angle = 0, face = "bold", colour = "black", hjust = 0), 
+          axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"), 
+          axis.text.y = element_text(face = "italic", colour = "black"),
+          strip.background = element_blank(), 
+          legend.position = "top",
+          legend.box.margin = margin(c(0,0,0,0)), 
+          legend.margin = margin(c(0,0,0,0)),
+          strip.placement = "outside",
+          panel.spacing.y = unit(x = 0,units = "points"), panel.border = element_rect(fill = NA, size = 0.1), 
+          panel.grid = element_blank(),
+          axis.ticks = element_line(colour = "black")
+          ) +
+    scale_size_continuous(limits = c(0,1)) +
+    scale_alpha_continuous(limits = c(0,1)) +
+    guides(size = FALSE, alpha = FALSE) +
+    scale_x_discrete(position = "bottom") +
+    scale_colour_manual( values = c(Microglia = "darkorange1", Monocytes = "seagreen3", Brain = "royalblue3")) +
+    labs(x = "", y = "", colour = "dataset", title = disease_title , subtitle = paste0(gwas_subtitle, "; PP4 ≥ ", min_h4)  )
+  
+  if( length(unique(to_plot$locus)) > 1  ){
+    p <- p + facet_grid(locus ~ ., scales = "free_y",space = "free_y" )
+  }
+  
+  
+  return(p)
+}
+
+
+```
+
+<!-- # Alzheimer's Disease - all loci (max H4 per QTL across 4 GWAS) -->
+
+<!-- ```{r fig.height = 20, fig.width = 10} -->
+<!-- disease_plot("AD", "Alzheimer's Disease", "GWAS: union of Marioni, Jansen, Kunkle, Lambert", min_h4 = 0.5) -->
+<!-- ``` -->
+
+# Alzheimer's Disease
+
+```{r fig.height = 20, fig.width = 8}
+disease_plot("AD", "Alzheimer's Disease", "GWAS: union of Marioni, Jansen, Kunkle, Lambert", min_h4 = 0.5)
+```
+
+## AD - focus on microglia
+
+```{r fig.height = 10, fig.width = 10}
+disease_plot("AD", "Alzheimer's Disease", "GWAS: union of Marioni, Jansen, Kunkle, Lambert", min_h4 = 0.5, QTL_focus = c("MiGA eQTL", "Young eQTL", "MiGA sQTL"))
+```
+
+```{r fig.height = 6, fig.width = 7}
+ad_mini_0.7 <- disease_plot("AD", "Alzheimer's Disease", "GWAS: union of Marioni, Jansen, Kunkle, Lambert", min_h4 = 0.7, QTL_focus = c("MiGA eQTL", "Young eQTL", "MiGA sQTL"))
+ad_mini_0.7
+
+ggsave(plot = ad_mini_0.7,filename = "plots/AD_loci_0.7_microglia.pdf", width = 8, height = 6)
+```
+
+<!-- ### AD - highlight only COLOCs with > 0.9 -->
+
+<!-- ```{r fig.width = 10, fig.height = 10} -->
+<!-- disease_plot("AD", "Alzheimer's Disease", "GWAS: union of Marioni, Jansen, Kunkle, Lambert", min_h4 = 0.9, distance_filter = TRUE) -->
+<!-- ``` -->
+
+
+### AD - Compare loci between the 4 GWAS
+
+Plot some well known AD loci shared between GWAS - do the same Colocalisations occur?
+
+```{r fig.height= 15, fig.width = 8}
+
+disease_plot("AD", "Alzheimer's Disease", "GWAS: Marioni, Jansen, Kunkle, Lambert", min_h4 = 0.5, which_GWAS = c("Kunkle_2019", "Marioni_2018", "Lambert_2013", "Jansen_2018"), 
+             which_locus = c("CASS4", "CLU", "BIN1", "PICALM", "ECHDC3")   )
+```
+
+
+### Microglia regions
+
+```{r fig.height = 8, fig.width = 10, dpi = 600}
+disease_plot("AD", "Alzheimer's Disease", "GWAS: union of Marioni, Jansen, Kunkle, Lambert", datasets = microglia_datasets, min_h4 = 0.5 )
+```
+
+
+# Parkinson's
+
+## Microglia, Monocytes and DLPFC
+
+```{r fig.height = 26, fig.width = 10, dpi = 600}
+disease_plot("PD", "Parkinson's Disease", "GWAS: Nalls et al 2019", min_h4 = 0.5)
+
+```
+
+### PD - just H4 > 0.9
+
+```{r fig.height = 8, fig.width = 8}
+pd_mini_0.7 <- disease_plot("PD", disease_title = NULL, gwas_subtitle = "Parkinson's Disease (Nalls et al 2019)", min_h4 = 0.7, QTL_focus = c("MiGA eQTL", "Young eQTL", "MiGA sQTL"))
+
+pd_mini_0.7
+
+
+
+both_mini <- ad_mini_0.7 + pd_mini_0.7 + plot_layout(ncol = 1, heights = c(1,1.3))
+
+both_mini
+
+ggsave(plot = both_mini,filename = "plots/COLOC/AD_PD_loci_0.7_microglia.pdf", width = 8, height = 14)
+
+
+```
+
+
+### Microglia regions
+
+```{r fig.height = 10, fig.width = 10}
+disease_plot("PD", "Parkinson's Disease", "GWAS: Nalls et al 2019", datasets = microglia_datasets, min_h4 = 0.5 )
+```
+
+# Schizophrenia
+
+## Microglia, Monocytes and DLPFC
+
+```{r fig.height = 22, fig.width = 10, dpi = 600}
+disease_plot("SCZ", "Schizophrenia", "GWAS: Ripke et al, 2014", min_h4 = 0.5)
+```
+
+### Microglia-focused
+```{r}
+scz_mini_0.7 <- disease_plot("SCZ", disease_title = NULL, gwas_subtitle = "Scizophrenia - min 0.7 in any microglia dataset", min_h4 = 0.7, QTL_focus = c("Microglia_all_regions", "Microglia_Young", "Microglia_all_regions_sQTL"))
+scz_mini_0.7
+
+```
+
+### Microglia regions
+
+```{r fig.height = 10, fig.width = 10}
+disease_plot("SCZ", "Schizophrenia", "GWAS: Ripke et al, 2014", datasets = microglia_datasets, min_h4 = 0.5 )
+```
+
+# Just 0.7 in microglia
+
+```{r fig.height = 14, fig.width = 8}
+disease_plot("SCZ", "Schizophrenia", "GWAS: Ripke et al, 2014", min_h4 = 0.7, QTL_focus = c("Microglia_all_regions", "Microglia_Young", "Microglia_all_regions_sQTL"))# +
+
+
+```
+
+
+### CMC TWAS Genes from Gusev et al
+
+```{r fig.height = 10, fig.width = 10}
+cmc_genes <- readLines("data/SCZ_CMC_splicing_genes.txt")
+
+scz_coloc <-
+  best_per_locus_filtered %>%
+  filter(disease == "SCZ", QTL_Gene %in% cmc_genes, PP.H4.abf > 0.5) 
+  #group_by(disease, locus, QTL, GWAS, QTL_Gene,type, GWAS_SNP ) %>%
+  #left_join(cell_type, by = "QTL") %>%
+  #summarise( PP.H4.abf = max(PP.H4.abf))
+
+disease_plot("SCZ", "Scizophrenia - genes prioritised by TWAS", "GWAS: Ripke et al, 2014", min_h4 = 0.5, which_data = scz_coloc )
+
+```
+
+# Bipolar Disorder 1 - Stahl 2019
+
+## Microglia, Monocytes and DLPFC
+
+```{r fig.height = 10, fig.width = 10}
+disease_plot("BPD", "Bipolar Disorder", "GWAS: Stahl et al, 2019", min_h4 = 0.5, which_GWAS = "Stahl_2019")
+```
+
+
+### Microglia regions
+
+```{r fig.height = 5, fig.width = 10}
+disease_plot("BPD", "Bipolar Disorder", "GWAS: Stahl et al, 2019", datasets = microglia_datasets, min_h4 = 0.5, which_GWAS = "Stahl_2019" )
+```
+
+# Bipolar 2 - Daner 2020
+
+
+```{r fig.height = 30, fig.width = 10}
+disease_plot("BPD", "Bipolar Disorder", "GWAS: Daner et al, 2020", min_h4 = 0.7, which_GWAS = "Daner_2020")
+```
+
+### Microglia regions
+
+```{r fig.height = 20, fig.width = 10}
+disease_plot("BPD", "Bipolar Disorder", "GWAS: Daner et al, 2020", datasets = microglia_datasets, min_h4 = 0.5, which_GWAS = "Daner_2020" )
+```
+
+
+## Bipolar - microglia-focussed
+
+```{r fig.height = 10, fig.width = 10}
+disease_plot("BPD", "Bipolar Disorder", "GWAS: Stahl et al, 2019", which_GWAS = "Stahl_2019", min_h4 = 0.7, QTL_focus = c("Microglia_all_regions", "Microglia_Young", "Microglia_all_regions_sQTL")) +
+disease_plot("BPD", "Bipolar Disorder", "GWAS: Daner et al, 2020", which_GWAS = "Daner_2020", min_h4 = 0.7, QTL_focus = c("Microglia_all_regions", "Microglia_Young", "Microglia_all_regions_sQTL")) +
+  plot_layout(ncol =1, heights = c(0.5, 1))
+
+
+```
+
+
+
+# Multiple Sclerosis
+
+```{r fig.width = 10, fig.height = 27, dpi = 600}
+disease_plot("MS", "Multiple Sclerosis", "GWAS: IMSGC 2019", min_h4 = 0.5)
+```
+
+
+```{r fig.height = 10, fig.width = 10, dpi = 600}
+disease_plot("MS", "Multiple Sclerosis", "GWAS: IMSGC 2019", datasets = microglia_datasets, min_h4 = 0.5 )
+```
+
+
+```{r fig.height = 10, fig.width = 10}
+disease_plot("MS", "Multiple Sclerosis", "GWAS: IMSGC 2019", min_h4 = 0.7, QTL_focus = c("Microglia_all_regions", "Microglia_Young", "Microglia_all_regions_sQTL") )
+```
+
+
+# ALS
+
+```{r fig.width = 10, fig.height = 10}
+disease_plot("ALS", "Amyotrophic Lateral Sclerosis", "GWAS: Nicolas et al 2019", min_h4 = 0.5)
+```
+ Microglia regions
+
+```{r fig.height = 10, fig.width = 10}
+disease_plot("ALS", "Amyotrophic Lateral Sclerosis", "GWAS: Nicolas et al 2019", datasets = microglia_datasets, min_h4 = 0.2 )
+```
+

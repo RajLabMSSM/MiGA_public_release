@@ -1,0 +1,423 @@
+---
+title: "Fine Mapping COLOC PLAC-Seq"
+author: "Jack Humphrey"
+date: "23/09/2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: hide
+    dev: 'svg'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggbio)
+library(GenomicRanges)
+
+```
+
+For each colocalised locus that has been fine-mapped:
+
+Plot the hg19 locations of the fine-mapped SNPs and QTL SNP
+
+Plot the genes involved (the QTL Gene and the Locus Gene)
+
+Plot the microglia promoters and enhancers
+
+Plot the PLAC-seq 
+
+
+## Load in data
+
+```{r}
+## fine-mapped SNPs - all hg19
+all_finemap <- data.table::fread("data/Fine_Mapping/brian/microgliaQTL_multiGWAS.finemapping_merged.labelled.tsv")
+## colocalisation results - containing lead QTL SNPs with hg19 coordinates
+all_coloc <- read_tsv("data/microglia_qtls_coloc_filtered_harmonised.tsv.gz")
+
+# prepare gene transcript database 
+# get the longest protein-coding transcript
+db.gr <- ensembldb::transcripts(EnsDb.Hsapiens.v75::EnsDb.Hsapiens.v75) %>%
+  data.table::as.data.table() %>%
+  filter( tx_biotype == "protein_coding") %>%
+  #dplyr::mutate(index=row.names(.)) %>%
+  dplyr::group_by(gene_id) %>% 
+  dplyr::slice_max(width, n = 1)
+db.gr$symbol <- echolocatoR::ensembl_to_hgnc(db.gr$gene_id)
+db.gr$seqnames <- paste0("chr", db.gr$seqnames)
+
+
+## Nott data
+mg_enhancers <- echolocatoR::NOTT_2019.interactome$`Microglia enhancers` %>% mutate(label = "enhancers")
+mg_promoters <- echolocatoR::NOTT_2019.interactome$`Microglia promoters` %>% mutate(label = "promoters")
+nott_all <- bind_rows(mg_enhancers, mg_promoters)
+  
+# PLAC
+plac_df <- echolocatoR::NOTT_2019.interactome$`Microglia interactome`
+
+```
+
+
+## Plotting functions
+
+```{r}
+
+# for a given locus and gene
+# get table of SNPs for fine-mapping and QTL lead
+get_locus_snps <- function(locus, gene, gwas, qtl = "MiGA eQTL"){
+
+  finemap_loc <- filter(all_finemap, Locus == locus, Dataset == gwas) %>%
+    filter( !label %in% c("GWAS Lead SNP", "QTL Lead SNP") ) %>%
+    dplyr::select(SNP, chr = CHR, end = POS, label) %>%
+    distinct()
+  
+  # get GWAS lead SNP
+  gwas_loc <- filter(all_coloc, Gene == gene, Locus == locus, QTL == qtl, Dataset == gwas) %>%
+    # for sQTLs - remove any non-colocalised SNPs 
+    arrange(desc(PP.H4.abf)) %>%
+    head(1) %>%
+    dplyr::select(SNP = GWAS_SNP, chr = GWAS_chr_hg19, end = GWAS_pos_hg19) %>%
+    distinct() %>%
+    mutate(label = "GWAS Lead SNP")
+  
+  # get QTL lead SNP
+  qtl_loc <- filter(all_coloc, Gene == gene, Locus == locus, QTL == qtl, Dataset == gwas) %>%
+    # for sQTLs - remove any non-colocalised SNPs 
+    arrange(desc(PP.H4.abf)) %>%
+    head(1) %>%
+    dplyr::select(SNP = QTL_SNP, chr = QTL_chr_hg19, end = QTL_pos_hg19) %>%
+    distinct() %>%
+    mutate(label = "QTL Lead SNP")
+    #mutate(label = paste0(GWAS, "\n", SNP) )
+    #tidyr::separate(QTL_junction, into = c("chr", "start", "end"), sep = ":|-", remove = FALSE ) %>%
+    #mutate(start = as.numeric(start), end = as.numeric(end)) %>%
+    #arrange(desc(PP.H4.abf)) %>%
+    #head(n)
+  stopifnot(nrow(gwas_loc) > 0)
+  stopifnot(nrow(finemap_loc) > 0)
+  stopifnot(nrow(qtl_loc) > 0)
+  
+  snp_loc <- bind_rows(finemap_loc, qtl_loc, gwas_loc) %>%
+        mutate(chr = paste0("chr", chr)) %>%
+        select(-label) %>%
+        distinct()
+  
+  snp_loc <- arrange(snp_loc, end)
+
+  #return(snp_loc)
+  ## Plot a bar
+  return(snp_loc)
+}
+
+
+
+
+
+snp_plot <- function(snp_loc, snp_width = 50){
+  require(ggplot2)
+  require(GenomicRanges)
+  require(ggbio)
+  grange_loc <-  
+    GenomicRanges::GRanges(seqnames = snp_loc$chr, 
+            ranges = IRanges::IRanges(start = snp_loc$end - snp_width, end = snp_loc$end), 
+            SNP = snp_loc$SNP,
+            label = snp_loc$chr)#, GWAS = snp_loc$GWAS, label = snp_loc$label )
+  
+  grange_loc$SNP <- factor(grange_loc$SNP, levels = snp_loc$SNP)
+
+  #grange_loc <- split(grange_loc, grange_loc$SNP)
+  #return(grange_loc)
+  plot <- 
+    ggplot() + 
+    ggbio::geom_rect(data = grange_loc, aes(group = label)  ) +
+    theme_classic() + #scale_fill_manual(values = "black") +
+    theme(legend.text = element_blank(), axis.ticks.y = element_blank(), axis.text = element_text(colour = "black") )  #+ labs(fill = "")
+    #scale_fill_viridis_c() + theme_classic() #+# theme(legend.position = "top")
+
+  return(plot)
+}
+
+# snp_loc <- get_locus_snps(locus = "BIN1", gene = "BIN1", gwas = "Kunkle_2019")
+# 
+# snp_plot(snp_loc)
+# 
+# ```
+# 
+# ```{r}
+# Promoter/Enhancer plots
+
+#for Microglia only
+
+
+#snp_loc <- get_locus_snps(locus = "MED12L", gene = "P2RY12", gwas = "Nalls23andMe_2019") 
+
+nott_epigenome_plot <- function(snp_loc, width = 250e3){
+  
+
+  snp_loc_start <- min(snp_loc$end) - width
+  snp_loc_end <- max(snp_loc$end) + width
+  
+  nott_loc <- filter(nott_all, chr == unique(snp_loc$chr), start >= snp_loc_start, end <= snp_loc_end)
+  
+  nott_gr <- GenomicRanges::GRanges(seqnames = nott_loc$chr, ranges = IRanges::IRanges(start = nott_loc$start, end = nott_loc$end, label = nott_loc$label))
+  
+  plot <- ggplot() + ggbio::geom_rect(nott_gr, aes(group = label, fill = label), colour = NA ) + 
+    scale_fill_manual(values = c("enhancers" = "goldenrod", "promoters" = "darkviolet")) +
+    guides(fill = FALSE) + 
+    theme_classic() + theme(axis.text = element_text(colour = "black"))
+    #, gap.geom = NULL, colour = "white")
+
+  return(plot)  
+}
+
+
+## PLAC-Seq
+
+nott_plac_plot <- function(snp_loc, width = 250e3){
+
+  snp_loc_start <- min(snp_loc$end) - width
+  snp_loc_end <- max(snp_loc$end) + width
+  
+  plac_loc <- filter(plac_df, start1 >= snp_loc_start & end2 <= snp_loc_end )
+
+  # when a PLAC-seq start or end overlaps a SNP - colour
+  grange_loc <-  
+    GenomicRanges::GRanges(seqnames = snp_loc$chr, 
+            ranges = IRanges::IRanges(start = snp_loc$end - 1, end = snp_loc$end), 
+            SNP = snp_loc$SNP)#, GWAS = snp_loc$GWAS, label = snp_loc$label )
+  
+  plac_start_gr <- GenomicRanges::GRanges( seqnames = plac_loc$chr1,
+                                             ranges = IRanges::IRanges(start = plac_loc$start1, end = plac_loc$end1) )
+  
+  plac_end_gr <- GenomicRanges::GRanges( seqnames = plac_loc$chr2,
+                                           ranges = IRanges::IRanges(start = plac_loc$start2, end = plac_loc$end2) )
+  # find overlaps
+  end_overlaps <- GenomicRanges::findOverlaps(grange_loc, plac_end_gr)
+  start_overlaps <- GenomicRanges::findOverlaps(grange_loc, plac_start_gr)
+  all_overlaps <- unique(c( S4Vectors::subjectHits(end_overlaps), S4Vectors::subjectHits(start_overlaps)))
+
+  plac_loc$overlap <- FALSE
+  plac_loc$overlap[all_overlaps] <- TRUE
+  
+  
+  ## make plot  
+  ggplot() + 
+    ggbio::geom_arch(data = plac_loc, aes(x = end1, xend = start2, colour = overlap, alpha = overlap) ) + theme_classic() + labs(x = "", y = "") + 
+    ggbio::geom_rect(data = plac_loc, aes(xmin = start1, xmax = end1, fill = overlap, alpha = overlap ), ymin = 0, ymax = 1, colour = NA ) +
+    ggbio::geom_rect(data = plac_loc, aes(xmin = start2, xmax = end2, fill = overlap, alpha = overlap), ymin = 0, ymax = 1, colour = NA) +
+    theme(axis.text.y = element_blank(), axis.ticks.y = element_blank() ) +
+    scale_fill_manual(values = c("darkgray", "black")) +
+    scale_colour_manual(values = c("gray", "black")) +
+    scale_alpha_manual(values = c(0.1, 1)) +
+    guides(colour = FALSE, alpha = FALSE, fill = FALSE)
+
+
+}
+
+## Gene Plot
+
+## plot protein-coding genes
+gene_plot <- function(snp_loc, width = 250e3){
+
+  snp_loc_start <- min(snp_loc$end) - width
+  snp_loc_end <- max(snp_loc$end) + width
+  snp_gr <- GenomicRanges::GRanges(seqnames = unique(snp_loc$chr), ranges = IRanges::IRanges(start = snp_loc_start, end = snp_loc_end))
+  GenomeInfoDb::seqlevelsStyle(snp_gr) <- "NCBI"
+  
+  db_loc <- subset(db.gr,
+                    seqnames == unique(snp_loc$chr) &
+                    (start >= snp_loc_start | end <= snp_loc_end) ) %>%
+    GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+    GenomeInfoDb::seqlevelsStyle(db_loc) <- "NCBI"
+
+  db_loc$symbol <- factor(db_loc$symbol, levels = unique(db_loc$symbol), ordered = T)
+  edb <-  ensembldb::addFilter( EnsDb.Hsapiens.v75::EnsDb.Hsapiens.v75,
+                                AnnotationFilter::TxIdFilter(db_loc$tx_id) )
+
+  plot <- ggplot() + 
+    ggbio::geom_alignment(edb,
+                          which = snp_gr,
+                          names.expr = "gene_name",
+                          aes(group = gene_name),
+                          arrow.rate = 0.01,
+                          length = unit(0.2, "cm"),
+                          show.legend=FALSE) +
+    theme_classic()
+  
+  return(plot)
+}
+
+
+
+## PLOT ALL TRACKS TOGETHER
+
+track_plot <- function(locus, gene ,gwas, width = 50e3, qtl = "MiGA eQTL", xlim = NULL ){
+  snp_loc <- get_locus_snps(locus, gene, gwas, qtl)
+  
+  snp_loc_start <- min(snp_loc$end) - width
+  snp_loc_end <- max(snp_loc$end) + width
+  
+  if(is.null(xlim)){
+    coords <-  c(snp_loc_start, snp_loc_end)
+  }else{
+    stopifnot(length(xlim) == 2)
+    coords <- xlim
+  }
+  
+  tracks(
+    SNPs = snp_plot(snp_loc), 
+    "Microglia\nChIP Peaks" = nott_epigenome_plot(snp_loc, width = width), 
+    "Microglia\nPLAC-Seq" = nott_plac_plot(snp_loc, width = width),
+    "Transcripts" = gene_plot(snp_loc, width = width),
+     heights = c(0.25,1,0.5,0.5),
+    main = paste0("Locus: ", locus, " Gene: ", gene, " GWAS: ", gwas ), xlim = coords,
+    label.text.angle = 0, label.bg.fill = "white",label.width = unit(7.5, "lines")
+    )
+}
+
+#track_plot(locus = "MED12L", gene = "P2RY12", gwas = "Nalls23andMe_2019", width = 100e3)
+#get_locus_snps(locus = "BIN1", gene = "BIN1", gwas = "Kunkle_2019") %>% gene_plot()
+#get_locus_snps(locus = "MED12L", gene = "P2RY12", gwas = "Nalls23andMe_2019") %>% snp_plot() #%>% gene_plot()
+
+
+```
+
+
+```{r}
+# 
+# all_loci <- all_coloc %>% 
+#   dplyr::filter(! Dataset %in% c("Nicolas_2018","Daner_2020", "Wray_2018"), QTL == "MiGA eQTL", PP.H4.abf > 0.5 ) %>% 
+#   dplyr::filter(Gene != "") %>%  
+#   dplyr::select(Dataset, Locus, Gene, disease) %>% 
+#   distinct() %>% 
+#   filter(paste(Dataset, Locus) %in% 
+#   paste(all_finemap$Dataset, all_finemap$Locus)) %>%
+#   split(.$disease)#filter(Gene %in% all_coloc$Gene)
+# 
+# all_loci$SCZ$plot <- map(1:nrow(all_loci$SCZ), ~{
+#   df <- all_loci$SCZ[.x,]
+#   track_plot(locus = df$Locus, gene = df$Gene, gwas = df$Dataset, width = 150e3)
+# })
+# 
+# all_loci$SCZ$plot
+# df <- all_loci$SCZ
+# 
+# track_plot(locus = df$Locus[1], gene = df$Gene[1], gwas = df$Dataset[1], width = 50e3)
+# 
+# track_plot(locus = df$Locus[2], gene = df$Gene[2], gwas = df$Dataset[2], width = 50e3)
+# 
+# track_plot(locus = df$Locus[3], gene = df$Gene[3], gwas = df$Dataset[3], width = 50e3, xlim = c(19402448,19791057 ) )
+# 
+# track_plot(locus = df$Locus[4], gene = df$Gene[4], gwas = df$Dataset[4], width = 500e3)
+# track_plot(locus = df$Locus[4], gene = df$Gene[4], gwas = df$Dataset[4], width = 500e3, xlim = c(111591630,112132229) )
+# 
+# track_plot(locus = df$Locus[5], gene = df$Gene[5], gwas = df$Dataset[5], width = 50e3)
+# 
+# track_plot(locus = df$Locus[6], gene = df$Gene[6], gwas = df$Dataset[6], width = 50e3, xlim = c(58100265,58400000))
+# 
+# track_plot(locus = df$Locus[7], gene = df$Gene[7], gwas = df$Dataset[7], width = 50e3, xlim = c(79173266,79278246))
+# 
+# track_plot(locus = df$Locus[8], gene = df$Gene[8], gwas = df$Dataset[8], width = 10e5, xlim = c(29321043,30462582))
+# 
+# 
+# track_plot(locus = df$Locus[9], gene = df$Gene[9], gwas = df$Dataset[9], width = 10e5, xlim = c(197500000, 198400000))
+# 
+# track_plot(locus = df$Locus[9], gene = df$Gene[9], gwas = df$Dataset[9], width = 10e5, xlim = c(197000000,199000000))
+# 
+# track_plot(locus = "16", gene = "IMMP2L", gwas = "Ripke_2014", width = 500e3)
+# 
+
+
+```
+
+```{r fig.width = 20, fig.height = 5}
+#track_plot(locus = "39", gene = "GNL3", gwas = "Ripke_2014",qtl = "MiGA sQTL", width = 150e3)
+#track_plot(locus = "39", gene = "GNL3", gwas = "Ripke_2014",qtl = "MiGA sQTL", width = 150e3, xlim = c(52710368,52967617) )
+
+#track_plot(locus = "125", gene = "IRF3", gwas = "Ripke_2014",qtl = "MiGA sQTL", width = 150e3)
+```
+
+
+
+```{r fig.width = 8}
+# snp_loc <- get_locus_snps(locus = "BIN1", gene = "BIN1", gwas = "Kunkle_2019")
+# 
+# snp_plot(snp_loc)
+# 
+# gene_plot(snp_loc, width =  100e3)
+
+# p2ry <- track_plot(locus = "MED12L", gene = "P2RY12", gwas = "Nalls23andMe_2019", width = 150e3)
+# 
+# ggsave(plot = p2ry, filename = "plots/P2RY12_Nalls_plac_seq_plot.pdf", width = 8, height = 4)
+# 
+# usp <- track_plot(locus = "ECHDC3", gene = "USP6NL", gwas = "Marioni_2018", width = 150e3)
+# 
+# ggsave(plot = usp, filename = "plots/USP6NL_Marioni_plac_seq_plot.pdf", width = 8, height = 4)
+# 
+# bin1 <-  track_plot(locus = "BIN1", gene = "BIN1", gwas = "Kunkle_2019", width = 100e3)
+# 
+# ggsave(plot = bin1, filename = "plots/BIN1_Kunkle_plac_seq_plot.pdf", width = 10, height = 5)
+
+
+
+# track_plot(locus = "BIN1", gene = "BIN1", gwas = "Kunkle_2019", width = 50e3)
+# 
+# track_plot(locus = "CTSB", gene = "CTSB", gwas = "Nalls23andMe_2019", width = 100e3)
+# 
+# track_plot(locus = "CASS4", gene = "CASS4", gwas = "Kunkle_2019", width = 100e3)
+# 
+# track_plot(locus = "KAT8", gene = "ITGAX", gwas = "Jansen_2018", width = 300e3)
+```
+
+## P2RY12 in PD
+
+```{r fig.width = 8, fig.height =3}
+track_plot(locus = "MED12L", gene = "P2RY12", gwas = "Nalls23andMe_2019", width = 150e3)
+```
+
+
+## MS4A6A
+
+```{r fig.width = 8}
+# ms4a <- track_plot(locus = "MS4A6A", gene = "MS4A6A", gwas = "Marioni_2018", qtl = "MiGA sQTL", width = 100e3)
+# 
+# ms4a
+# 
+# ggsave(plot = ms4a, filename = "plots/MS4A6A_Marioni_plac_seq_plot.pdf", width = 10, height = 5)
+
+track_plot(locus = "MS4A6A", gene = "MS4A6A", gwas = "Kunkle_2019", width = 500e3, qtl = "MiGA sQTL")
+#track_plot(locus = "MS4A6A", gene = "MS4A6A", gwas = "Lambert_2013", width = 100e3, qtl = "MiGA sQTL")
+#track_plot(locus = "MS4A6A", gene = "MS4A6A", gwas = "Marioni_2018", width = 100e3, qtl = "MiGA sQTL")
+#track_plot(locus = "MS4A6A", gene = "MS4A6A", gwas = "Jansen_2018", width = 100e3, qtl = "MiGA sQTL")
+
+
+
+```
+
+# CD33
+
+```{r fig.width = 8}
+#track_plot(locus = "CD33", gene = "CD33", gwas = "Kunkle_2019", width = 500e3, qtl = "MiGA sQTL")
+#track_plot(locus = "CD33", gene = "CD33", gwas = "Lambert_2013", width = 100e3, qtl = "MiGA sQTL")
+#track_plot(locus = "CD33", gene = "CD33", gwas = "Marioni_2018", width = 100e3, qtl = "MiGA sQTL")
+track_plot(locus = "CD33", gene = "CD33", gwas = "Jansen_2018", width = 100e3, qtl = "MiGA sQTL")
+
+```
+
+# PICALM
+
+
+```{r fig.width = 8}
+track_plot(locus = "PICALM", gene = "PICALM", gwas = "Kunkle_2019", width = 100e3)
+#track_plot(locus = "PICALM", gene = "PICALM", gwas = "Lambert_2013", width = 100e3)
+#track_plot(locus = "PICALM", gene = "PICALM", gwas = "Marioni_2018", width = 100e3)
+#track_plot(locus = "PICALM", gene = "PICALM", gwas = "Jansen_2018", width = 100e3)
+
+# tracks(SNPs = snp_plot(snp_loc), "Epigenomic Peaks" = nott_epigenome_plot(snp_loc, width = 100e3), "PLAC-Seq" = nott_plac_plot(snp_loc, width = 100e3), heights = c(1,1,0.5,0.5), "Transcripts" = gene_plot(snp_loc, width = 100e3) )
+
+
+```
+

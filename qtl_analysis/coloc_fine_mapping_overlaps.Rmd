@@ -1,0 +1,1061 @@
+---
+title: "COLOC Overlaps"
+author: "Jack Humphrey"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: hide
+    dev: 'svg'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, echo = FALSE, message = FALSE)
+library(tidyverse)
+library(ggrepel)
+library(patchwork)
+library(echolocatoR)
+
+```
+
+# Input data
+
+Brian has Fine-mapped all the disease GWAS and provided the following:
+
+1. microgliaQTL_multiGWAS.finemapping_merged.csv.gz
+  For all loci that colocalise with MiGA eQTLs:
+    The fine-mapped SNPs and which tools they were proposed by
+
+I have performed COLOC using the same GWAS
+
+The lead GWAS SNP should be defined by the summary stats (within all_coloc), not by Brian.
+
+# TODO - fix lead GWAS SNP issue - so that lead GWAS SNP from COLOC has hg19 coordinates. For this either
+  take the original summary stat files as they have the hg19 coordinates
+  lift back over the COLOC hg38 coordinates to hg19 (more feasible).
+
+
+## Prepare fine-mapping results
+
+
+```{r}
+all_res <- data.table::fread("data/Fine_Mapping/brian/microgliaQTL_multiGWAS.finemapping_merged.csv.gz", nThread = 4)
+
+# add in verdict based on whether each SNP is a lead SNP, Consensus SNPs or in Union Consensus Set (UCS)
+
+all_res <- 
+  mutate(all_res, label = case_when(
+    Dataset != "Microglia_all_regions" & leadSNP == TRUE ~ "GWAS Lead SNP",
+    Dataset != "Microglia_all_regions" & leadSNP == FALSE & Support > 1 ~ "Consensus SNPs",
+    Dataset != "Microglia_all_regions" & Support == 1 ~ "Credible SNPs",
+    Dataset != "Microglia_all_regions" & Support == 0 ~ "Other SNPs",
+    Dataset == "Microglia_all_regions" & leadSNP == TRUE ~ "QTL Lead SNP",
+    Dataset == "Microglia_all_regions" & proxy == TRUE ~"LD Proxy SNP"
+  )) 
+
+# REMOVE BRIAN"S LEAD GWAS SNPs
+# remove other SNPs that aren't QTL or fine-mapped
+all_res <- filter(all_res, label != "Other SNPs" & label != "LD Proxy SNP" & label != "GWAS Lead SNP")
+
+# add back in GWAS lead SNPs that are also Consensus SNPss
+#gwas_lead_consensus <- filter(all_res, label == "GWAS Lead SNP" & Consensus_SNP == TRUE) %>% mutate(label = "Consensus SNPs")
+
+all_res <- all_res %>%
+  mutate(label = factor(label, levels = c("QTL Lead SNP", "GWAS Lead SNP", "Consensus SNPs", "Credible SNPs"))) %>%
+  mutate(label = forcats::fct_rev(label))
+
+# get Gene and GWAS (for QTL lead SNPs) out of ID
+all_res$Gene <- str_split_fixed(all_res$id,pattern =  "\\.", n = 3)[,3]
+all_res$GWAS <- str_split_fixed(all_res$id,pattern =  "\\.", n = 3)[,1]
+
+## Rename AD Loci
+ad_consensus_loci <- readxl::read_excel("data/AD_GWAS_consensus_loci_names.xlsx")
+
+all_res <- left_join(all_res, ad_consensus_loci, by = c("Dataset", "Locus" = "old_locus_name")) 
+all_res$Locus <- coalesce(all_res$consensus_locus_name, all_res$Locus)
+
+all_res <-  filter(all_res, !Dataset %in% c("Daner_2020", "Nicolas_2018", "Wray_2018") )
+
+
+write_tsv(all_res, "data/Fine_Mapping/brian/microgliaQTL_multiGWAS.finemapping_merged.labelled.tsv" )
+
+# 
+# all_ld <- data.table::fread("data/Fine_Mapping/brian/combined_query_snp_list.txt.gz") 
+# all_ld$V1 <- NULL
+# data.table::setkey(all_ld, "query_snp")
+```
+
+## Prepare COLOC 
+
+This requires getting the hg19 coordinates for all lead SNPs
+
+```{r}
+### COLOC Results 
+
+# load COLOC
+all_coloc <- read_tsv("data/microglia_qtls_coloc_filtered.tsv")
+
+# harmonise colunns with fine-mapping
+all_coloc <- rename(all_coloc, Locus = locus, Dataset = GWAS, Gene = QTL_Gene)
+
+# MS - Brian used different locus names in MS for fine-mapping, use a key
+ms_locus_key <- read_tsv("data/MS_GWAS_locus_key.txt")
+all_coloc$Locus_Brian <- ms_locus_key$Locus_Brian[ match(all_coloc$Locus, ms_locus_key$Locus)]
+all_coloc$Locus <- coalesce(all_coloc$Locus_Brian, all_coloc$Locus)
+all_coloc$Locus_Brian <- NULL
+
+# Stahl - remove "*" and gsub "," to "-"
+all_coloc$Locus <- gsub("\\*", "", gsub(",", "-", all_coloc$Locus))
+
+# Nalls PD - 5 loci were skipped by Brian because they didn't pass QC
+all_coloc <- filter(all_coloc, !Locus %in% c("DDRGK1", "SEMA4A", "GXYLT1", "FGD4", "ZNF608"))
+
+# get hg19 positions for lead QTL SNPs and lead GWAS SNPs
+snp_list <- dplyr::filter(all_coloc, PP.H4.abf > 0.5) %>% dplyr::select(GWAS_SNP, QTL_SNP) %>% tidyr::gather() %>% dplyr::pull(value) %>% unique()
+
+snp_meta_file <- "data/biomart_all_coloc_snp_meta.tsv"
+
+if(!file.exists(snp_meta_file) ){
+  library(biomaRt)
+  n_bins <- 10
+  snp_split <- split(snp_list, f = ntile(snp_list, n = n_bins))
+  
+  snp_mart = useMart("ENSEMBL_MART_SNP",
+                     dataset="hsapiens_snp",
+                     host =  "grch37.ensembl.org")
+
+  snp_results <- 
+    map_df( 1:n_bins, ~{
+      print(.x)
+    biomaRt::getBM(snp_mart, filters="snp_filter",
+                                values=snp_split[.x],
+                                attributes=c("refsnp_id","chr_name", "chrom_start","chrom_end"
+                                            ) ) %>%
+      mutate(chr_name = as.numeric(chr_name) ) %>% # stupid fix for now
+      filter(!is.na(chr_name))
+    })
+  
+  snp_meta <- dplyr::select(snp_results, snp = refsnp_id, chr = chr_name, start = chrom_start, end = chrom_end) %>%
+    mutate( chr = paste0("chr",chr))
+  
+  chrs <- paste0("chr", 1:22)
+  
+  snp_meta <- filter(snp_meta, chr %in% chrs)
+  
+  write_tsv(snp_meta, path = snp_meta_file)
+}
+
+snp_meta <- read_tsv("data/biomart_all_coloc_snp_meta.tsv")
+snp_meta$chr <- as.numeric(gsub("chr", "", snp_meta$chr))
+
+all_coloc$QTL_pos_hg19 <- snp_meta$end[ match(all_coloc$QTL_SNP, snp_meta$snp) ]
+all_coloc$QTL_chr_hg19 <- snp_meta$chr[ match(all_coloc$QTL_SNP, snp_meta$snp) ]
+
+all_coloc$GWAS_pos_hg19 <- snp_meta$end[ match(all_coloc$GWAS_SNP, snp_meta$snp) ]
+all_coloc$GWAS_chr_hg19 <- snp_meta$chr[ match(all_coloc$GWAS_SNP, snp_meta$snp) ]
+
+
+table(snp_list %in% snp_meta$snp)
+
+# write out!
+
+write_tsv(all_coloc, path = "data/microglia_qtls_coloc_filtered_harmonised.tsv.gz")
+```
+
+
+## FUNCTIONS
+
+binding the lead QTL SNP to the fine-mapped GWAS SNPs for that locus
+getting the LD between them (using LDlinkR)
+overlapping Nott promoters and enhancers
+
+```{r}
+
+## FUNCTIONS
+get_ld_proxy <- function(locus_res, output = "R2", force = FALSE){
+  top_qtl_snp <- filter(locus_res, label == "QTL Lead SNP" )%>% pull(SNP) %>% unique() %>% as.character()
+  # check to see if Brian had already looked it up
+  #ld_matrix <- all_ld[top_qtl_snp] %>% as_tibble()
+  # if not then use LDlinkR
+  #if( all(is.na(ld_matrix$R2 ) ) | force == TRUE ){
+  print(" * calculating LD with LDlinkR")
+  ld_matrix <- calc_LD(snps = locus_res$SNP, top_snp = top_qtl_snp)
+  #}
+  return(ld_matrix)
+}
+
+calc_LD <- function( snps, top_snp ){
+    # get LDlink token from .Renviron (only Jack has this, for access go to https://ldlink.nci.nih.gov/?tab=apiaccess)
+    api_token <- "bd9e89a01974"#Sys.getenv("LDLINK_TOKEN")
+   
+    # weird snps with "esv" instead of "rs" - remove
+    snps <- snps[ grepl("rs", snps) ]
+    # also ignores non-rs IDs - in format 1:1:C:G
+    # if only one SNP then QTL and GWAS must be same SNP
+    if( length(snps) == 1){ 
+        snps$LD <- 1; return(x) 
+    }
+    
+    # get pairwise LD matrix
+    ld_matrix <-  LDlinkR::LDmatrix( snps = snps, pop = "CEU", r2d = "r2", token = api_token ) %>%
+      dplyr::rename(RS_Number = RS_number) # to be consistent with Brian
+ 
+    #stopifnot( nrow(ld_matrix) < length(snps) )
+    ld_matrix <- tidyr::gather(ld_matrix, key = "query_snp", value = "R2", -RS_Number)
+    
+    ld_matrix <- filter(ld_matrix, query_snp == top_snp)
+    
+    #ld_matrix <- tibble::column_to_rownames(ld_matrix, var = "RS_number")
+    return(ld_matrix)
+}
+
+# if some SNPs are missing position info then ignore them
+nott_overlap <- function(locus_res, set, return_coordinates = FALSE){
+  snp_df <- 
+    filter(locus_res, !is.na(CHR), !is.na(POS)) %>% 
+    dplyr::mutate(chr = paste0("chr", CHR), start = POS - 1, end = POS, snp = SNP )
+  #stopifnot( all(!is.na(snp_df$POS) ) )
+  snp_gr <- GenomicRanges::GRanges(seqnames = snp_df$chr, ranges = IRanges::IRanges(start = snp_df$start, end = snp_df$end), snp = snp_df$snp)
+  
+  df <- NOTT_2019.interactome[[set]]
+  
+  df_gr <- GenomicRanges::GRanges(seqnames = df$chr, ranges = IRanges::IRanges(start = df$start, end = df$end))
+
+  overlap <- GenomicRanges::findOverlaps(snp_gr, df_gr)
+  
+  set_string <- gsub(" ", "_", set)
+  
+  locus_res[[set_string]] <- locus_res$SNP %in% snp_gr[overlap@from]$snp
+  
+  if( return_coordinates == TRUE){
+    set_df <- as.data.frame(df_gr[overlap@to])
+    #set_df$label <- set_df
+    coords <- paste0(gsub("chr", "", set_df$seqnames), ":", set_df$start, "-", set_df$end )
+    coord_name <- paste0(set_string, "_coord_hg19")
+    
+    locus_res[[coord_name]] <- NA
+    locus_res[[coord_name]][overlap@from] <- coords
+  }
+  return(locus_res)
+}
+
+add_nott_overlap <- function(locus_res, return_coords = FALSE){
+  #if(!all(!is.na(locus_res$POS) )){print(" * not all SNPs have hg19 position info"); return(locus_res)}
+  if(is.null(locus_res)){return(NULL)}
+    locus_res %>%
+  nott_overlap("Microglia enhancers", return_coords) %>%
+  nott_overlap("Microglia promoters", return_coords) %>%
+  nott_overlap("Neuronal enhancers", return_coords) %>%
+  nott_overlap("Neuronal promoters", return_coords) %>%
+  nott_overlap("Oligo enhancers", return_coords) %>%
+  nott_overlap("Oligo promoters", return_coords) %>%
+  nott_overlap("Astrocyte enhancers", return_coords) %>%
+  nott_overlap("Astrocyte promoters", return_coords)
+}
+
+
+find_overlaps <- function(locus, gene, gwas, qtl = "MiGA eQTL"){
+  stopifnot(locus %in% all_res$Locus)
+  stopifnot(gwas %in% all_res$GWAS)
+  stopifnot(gene %in% all_coloc$Gene)
+  
+  locus_res <- dplyr::filter(all_res, 
+                             Locus == locus, 
+                             Dataset == gwas
+  )
+  # extract QTL lead SNP for the specified Gene from the COLOC results
+  qtl_gene <- 
+    dplyr::filter(all_coloc, QTL == qtl, Locus == locus, Gene == gene, Dataset == gwas) %>%
+    dplyr::select(Locus, Dataset, Gene, SNP = QTL_SNP, CHR = QTL_chr_hg19, POS = QTL_pos_hg19, PP.H4.abf, QTL_junction) %>%
+    dplyr::mutate(label = "QTL Lead SNP")
+  
+  lead_gwas <-
+    dplyr::filter(all_coloc, QTL == qtl, Locus == locus, Gene == gene, Dataset == gwas) %>%
+    dplyr::select(Locus, Dataset, Gene, SNP = GWAS_SNP, PP.H4.abf, QTL_junction, CHR = GWAS_chr_hg19, POS = GWAS_pos_hg19) %>%
+    dplyr::mutate(label = "GWAS Lead SNP")
+  
+  
+  if(nrow(qtl_gene) == 0){print("QTL Gene cannot be found!");return(NULL)}
+  # sQTLs - special case where you have multiple junctions colocalising - pick the best
+  if(nrow(qtl_gene > 1)){
+    qtl_gene <- qtl_gene %>% arrange(desc(PP.H4.abf)) %>% head(1)
+  }
+  
+  if( nrow(locus_res) < 2){print("GWAS Locus cannot be found in finemapping!!");return(NULL) }
+  
+  if( nrow(lead_gwas)  == 0 ){print("GWAS Locus cannot be found in COLOC!");return(NULL) }
+  
+  
+  locus_res <- bind_rows(locus_res, qtl_gene, lead_gwas)
+  #return(locus_res)
+  
+  ld_proxies <- get_ld_proxy(locus_res, force = TRUE)
+  
+  #return(ld_proxies)
+  if(all(is.na(ld_proxies$R2)) ) {print("LD cannot be calculated!");return(NULL)}
+  stopifnot(!all(is.na(ld_proxies$R2)))
+  
+  locus_res$R2 <- ld_proxies$R2[ match(locus_res$SNP, ld_proxies$RS_Number)]
+  locus_res$R2 <- signif(locus_res$R2, digits = 2)
+  locus_res$R2[is.na(locus_res$R2)] <- -Inf #
+  
+  #locus_res <- filter(locus_res, !(SNP == top_qtl_snp &  label == "LD Proxy SNP") )
+
+  snp_order <- dplyr::select(locus_res, SNP, POS) %>% distinct() %>% arrange(POS) %>% filter(!duplicated(SNP) ) %>% pull(SNP)
+  
+  locus_res$SNP <- factor(locus_res$SNP, levels = snp_order)
+  
+  locus_res$Gene <- gene
+  locus_res$GWAS <- gwas
+  locus_res$Locus <- locus
+ # if(return_object == TRUE){
+    return(locus_res)
+}
+
+plot_overlaps <- function(locus_res, Nott = FALSE){
+  if(is.null(locus_res)){return(NULL)}
+  gene <- unique(locus_res$Gene)
+  gwas <- unique(locus_res$GWAS)
+  locus <- unique(locus_res$Locus)
+  coloc_h4 <- locus_res$PP.H4.abf
+  coloc_h4 <- coloc_h4[ !is.na(coloc_h4)]
+  coloc_h4 <- signif(coloc_h4, digits = 2)
+  
+  lead_qtl_snp <- filter(locus_res, label == "QTL Lead SNP") %>% pull(SNP) %>% as.character()
+  colour_guide_string <- bquote(R^2~with~.(lead_qtl_snp))
+  
+  overlap_plot <- locus_res %>%
+    mutate(label = factor(label, levels = c("QTL Lead SNP", "GWAS Lead SNP", "Consensus SNPs", "Credible SNPs"))) %>%
+    mutate(label = forcats::fct_rev(label)) %>%
+    ggplot(aes(x = SNP, y = label ) ) + #y = paste0(Dataset, "\n", Gene) ) ) + 
+    geom_point(aes(colour = R2), size = 10, position = position_nudge(x = 0)) +
+    geom_text(aes(label = R2), nudge_x = 0, size = 3) +
+    theme_bw() +
+    scale_x_discrete(position = 'top', guide = guide_axis(n.dodge = 2)) +
+    #theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+    #scale_colour_viridis_c() +
+    scale_colour_distiller(palette = "Spectral", limits = c(0,1), breaks = c(0,1), labels = c(0,1) ) +
+    #scale_fill_manual(values = label_values) +
+    #cale_alpha(range = c(0.5,1) ) +
+    labs(y = "", x = "", title = paste("Locus:", locus, "Gene: ", gene), subtitle = paste("GWAS:", gwas, "COLOC H4:", coloc_h4  ), colour = colour_guide_string ) +
+    theme(panel.grid = element_blank() ) +
+    #guides(colour = guide_colourbar(barwidth = 3, ticks = FALSE, barheight = 0.5, label.position = "top",label.vjust = -1) ) +
+    guides(colour = guide_colourbar(barwidth = 0.5, barheight = 3,label.position = "right", ticks  = FALSE, raster =TRUE )) +
+    theme(axis.text = element_text(colour = "black"), axis.ticks = element_line(colour = "black") )
+  
+  if( Nott == TRUE & "Neuronal_enhancers" %in% colnames(locus_res) ){
+    stopifnot( "Neuronal_enhancers" %in% colnames(locus_res))
+    to_plot <- locus_res %>%
+    dplyr::select(Locus, SNP, POS, ends_with("enhancers"), ends_with("promoters")) %>%
+    distinct() %>%
+    tidyr::gather( key = "feature", value = "overlap", -Locus, -SNP, -POS) %>%
+    #dplyr::filter(overlap == TRUE) %>%
+    tidyr::separate(feature, into = c("cell_type", "seq_type"), sep = "_") %>%
+    dplyr::mutate(cell_type = case_when(cell_type == "Neuronal" ~"Neurons",
+                                        cell_type == "Oligo" ~ "Oligos",
+                                        cell_type == "Astrocyte" ~ "Astrocytes",
+                                        TRUE ~ cell_type)) %>%
+      mutate(cell_type = factor(cell_type, levels = rev(c("Astrocytes", "Microglia", "Neurons", "Oligos"))))
+  
+  nott_plot <- to_plot %>%
+    ggplot(aes(x = SNP, y = cell_type)) + 
+    geom_point(aes(colour = seq_type,alpha = overlap), size = 10 ) +
+    labs(y = "", x = "", colour = "Overlapping") + #, title = paste("Locus:", locus, "Gene: ", gene), subtitle = paste("GWAS:", gwas  ) ) +
+    theme_bw() +
+    scale_alpha_manual(values = c(0,1)) +
+    scale_colour_manual(values = c("enhancers" = "goldenrod", "promoters" = "darkviolet")) +
+    theme(panel.grid = element_blank() ) +
+    guides(alpha = FALSE) +
+    theme(axis.text = element_text(colour = "black"), axis.ticks = element_line(colour = "black"))
+  
+  return( overlap_plot +  
+            nott_plot + 
+            theme(axis.text.x = element_blank() ) + 
+            plot_layout(nrow = 2))
+  }else{
+  #return(locus_res)
+    return(overlap_plot)
+  }
+}
+
+# testing
+test <- find_overlaps(locus = "MED12L", gene = "P2RY12", gwas = "Nalls23andMe_2019", qtl = "MiGA eQTL") %>%
+  add_nott_overlap() 
+
+
+test %>%
+  plot_overlaps(Nott = TRUE)
+
+test <- find_overlaps(gwas = "Marioni_2018", locus =	"BIN1", gene = "BIN1" ) %>%
+   add_nott_overlap()
+
+test %>%
+   plot_overlaps(Nott = TRUE)
+
+```
+
+
+## Sanity Checks
+
+Verify that all COLOC loci have been fine-mapped
+
+Verify that all lead QTL SNPs in COLOC are also lead QTL SNPs according to Brian's table
+
+```{r}
+#
+coloc_loci <- all_coloc %>% dplyr::select(Dataset, Locus) %>% distinct()
+
+coloc_loci$fine_mapped <- ifelse( paste(coloc_loci$Dataset, coloc_loci$Locus) %in% paste(all_res$Dataset, all_res$Locus), TRUE, FALSE)
+
+
+table(coloc_loci$fine_mapped)
+
+dplyr::filter(coloc_loci, fine_mapped == FALSE, Dataset != "Nicolas_2018")
+
+dplyr::group_by(coloc_loci, Dataset) %>% dplyr::summarise( sum(fine_mapped) / n() )
+
+# 
+# 
+# 
+# finemap_lead_qtl_snps <- filter(all_res, Dataset == "Microglia_all_regions", label == "QTL Lead SNP")
+# 
+# finemap_lead_qtl_snps$coloc_lead_snp <- mg_coloc$QTL_SNP[ match(paste(finemap_lead_qtl_snps$Locus, finemap_lead_qtl_snps$Gene), paste(mg_coloc$locus, mg_coloc$QTL_Gene))]
+
+#ad_coloc <- filter(all_coloc, QTL == "Microglia_all_regions", disease == "AD", PP.H4.abf > 0.5)
+```
+
+## Create overlaps - save tables and plots
+
+```{r}
+
+# using all COLOC - this is including loci that were later removed in COLOC analysis for being too far away.
+
+all_loci <- all_coloc %>% 
+  dplyr::filter(! Dataset %in% c("Nicolas_2018","Daner_2020", "Wray_2018"), QTL == "MiGA eQTL", PP.H4.abf > 0.5 ) %>% 
+  dplyr::filter(Gene != "") %>%  
+  dplyr::select(Dataset, Locus, Gene) %>% 
+  distinct() %>% 
+  filter(paste(Dataset, Locus) %in% 
+  paste(all_res$Dataset, all_res$Locus)) #filter(Gene %in% all_coloc$Gene)
+
+eqtl_overlap_rdata <- "data/Fine_Mapping/Microglia_eQTL_overlaps.RData"
+
+if( !file.exists(eqtl_overlap_rdata)){
+  # actually run it!
+  all_overlaps <- 
+    map(1:nrow(all_loci), ~{
+      df <- all_loci[.x,]
+      print(.x)
+      find_overlaps(locus = df$Locus, gene = df$Gene, gwas = df$Dataset) %>% add_nott_overlap()
+      
+    } )
+  
+  # save as RData
+  save(all_overlaps, file = eqtl_overlap_rdata )
+}else{
+  load(eqtl_overlap_rdata)
+}
+
+```
+
+
+```{r fig.width = 10, fig.height = 6}
+#### add list columns to all_loci df --------------
+
+all_loci$overlap_df <- all_overlaps
+
+all_loci$overlap_plot <-
+  map(all_overlaps, ~{
+  if(is.null(.x)){return(NULL)}
+  if(nrow(.x) ==0){return(NULL)}
+    print(unique(.x$Locus))
+  return(plot_overlaps(.x, Nott = TRUE ))
+})
+
+# calculate max R2
+all_loci$max_R2 <- 
+  purrr::map_dbl(all_loci$overlap_df, ~{
+    if(is.null(.x)){return(NA)}
+    dplyr::filter(.x, label != "QTL Lead SNP") %>% arrange(desc(R2) ) %>% head(1) %>% 
+    dplyr::select(Dataset, Locus, Gene, label, max_R2 = R2 ) %>% pull(max_R2)
+  })
+
+# how many loci overlap with a microglia enhancer - at least one SNP in the set?
+all_loci$microglia_enhancers <- 
+  purrr::map_lgl(all_loci$overlap_df, ~{
+    if(is.null(.x)){return(NA)}
+    if( !"Microglia_enhancers" %in% colnames(.x)){ return(NA)}
+    dplyr::arrange(.x, label, desc(Microglia_enhancers) ) %>% head(1) %>%
+    dplyr::pull(Microglia_enhancers)
+  }) 
+
+
+# write out all plots
+plotFolder <- "plots/eQTL/"
+dir.create(plotFolder)
+
+all_loci <- mutate(all_loci, plot_file = paste0(plotFolder, Dataset, "_", Locus, "_", Gene, "_overlap_plot.pdf") )
+
+for(i in 1:nrow(all_loci) ){
+  #print(all_loci$plot_file[i])
+  if(!is.null(all_loci$overlap_plot[[i]]) ){
+    ggsave(plot =  all_loci$overlap_plot[[i]], filename = all_loci$plot_file[i], width = 7, height = 4, device = "pdf" )
+  }
+}
+
+## put together giant table
+mg_coloc <- filter(all_coloc, QTL == "MiGA eQTL")
+
+all_loci_coloc <- left_join(all_loci, mg_coloc, by = c("Locus","Gene", "Dataset") ) 
+
+write_tsv(dplyr::select(all_loci_coloc, -overlap_df, -overlap_plot), path = "data/Fine_Mapping/Microglia_eQTL_overlaps.tsv" )
+
+## write out fine-mapping results as flat file
+finemap_outfile <- all_loci %>% select(overlap_df) %>% tidyr::unnest() %>% select(GWAS, Locus, Gene, SNP, label, PP.H4.abf, R2, everything()  ) %>% select( -proxy, -ensembl_id, -Dataset, -Study, -id, -consensus_locus_name)
+
+write_tsv(finemap_outfile, path = "tables/Fine_mapping_supp_table.tsv.gz")
+
+
+all_loci_coloc
+
+
+disease_colours <- c(
+  "AD" = "deepskyblue",
+  "PD" = "darkblue",
+  "SCZ" = "red",
+  "BPD" = "firebrick",
+  #"MDD" = "orange",
+  "MS" = "goldenrod"
+)
+## compare max R2 to coloc strength, SNP distance etc
+all_loci_coloc %>%
+  filter( disease != "MDD") %>%
+  group_by(disease, Gene) %>%
+  #summarise( max_R2 = max(max_R2)) %>%
+  summarise( PP.H4.abf = max(PP.H4.abf)) %>%
+  left_join(all_loci_coloc) %>%
+  mutate( Gene = ifelse(max_R2 > 0.5, Gene, "" )) %>%
+  mutate(disease = factor(disease,levels = rev(names(disease_colours)))) %>%
+  ggplot(aes(x = max_R2, y = disease)) + 
+  geom_point(aes(colour = disease)) + 
+  #geom_jitter(aes(colour = disease), width = 0, height = 0.25) +
+  geom_text_repel(aes(label = Gene) ) +
+  theme_classic() + scale_colour_manual(values = disease_colours) + #+ ylim(0,1.2)
+  labs(x = expression(Max~R^2~"between QTL lead SNP and fine-mapped SNPs"))
+
+```
+
+```{r fig.width = 10, fig.height = 15}
+## summarise overlaps
+
+per_locus_overlaps <- 
+  purrr::map(all_loci$overlap_df, ~{
+    if(is.null(.x)){return(NULL)}
+    id <- dplyr::select(.x, Dataset, Locus, Gene) %>% distinct()
+    df <- dplyr::select(.x, ends_with(c("enhancers", "promoters")))
+    summary <- enframe(colSums(df)) %>% tidyr::spread(key = name, value = value)
+    bind_cols(id, summary)
+  } )  %>%
+  bind_rows()
+
+
+overlaps_to_plot <- all_loci_coloc %>%
+  dplyr::filter(!is.na(Locus)) %>%
+  dplyr::group_by(disease, Gene) %>%
+  dplyr::summarise( PP.H4.abf = max(PP.H4.abf)) %>%
+  dplyr::filter( PP.H4.abf > 0.5) %>%
+  dplyr::left_join( dplyr::select(all_loci_coloc, disease,Gene, PP.H4.abf, Dataset, GWAS_SNP) )  %>%
+  dplyr::left_join(per_locus_overlaps) %>%
+  tidyr::gather(key = "feature", value = "count", -Dataset, -Locus, -Gene, -PP.H4.abf, -disease, -GWAS_SNP) %>%
+  dplyr::mutate(feature = gsub("_", "\n", feature)) %>%
+  dplyr::mutate(count = ifelse(count == 0, NA, count)) %>%
+  dplyr::mutate(disease = factor(disease, levels = (names(disease_colours))))  %>%
+  dplyr::filter( !is.na(Locus))
+
+
+nott_overlap_plot <- function(which_disease, which_title){
+  to_plot <- filter(overlaps_to_plot, disease == which_disease )
+  
+  if( which_disease %in% c("SCZ", "BPD", "MS")){ to_plot$Locus <- to_plot$GWAS_SNP}
+  
+  plot <- to_plot %>%
+  ggplot(aes( y = Gene, x = feature, label = count) ) +
+  geom_tile(aes(fill = count)) +
+  scale_fill_viridis_c("Number of overlapping SNPs", na.value = "white", limits = c(0,10), breaks = c(0,5,10)) +
+  facet_grid(Locus~., scales = "free_y",space = "free_y" ) +
+  #scale_x_discrete(position = 'top') +
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 90, hjust=1)) +
+  labs(x = "", y = "") +
+  scale_x_discrete(position = "top", expand = c(0,0)) +
+    scale_y_discrete(expand = c(0,0)) +
+  theme(
+    strip.text.y = element_text(angle = 0, face = "bold", colour = "black", hjust = 0.5), 
+  axis.text.x = element_text(angle = 0, hjust = 0.5, colour = "black"), 
+  axis.text.y = element_text(face = "italic", colour = "black"),
+  strip.background = element_blank(), 
+  legend.position = "top",
+  legend.box.margin = margin(c(0,0,0,0)), 
+  legend.margin = margin(c(0,0,0,0)),
+  strip.placement = "outside",
+  panel.spacing.y = unit(x = 2.5,units = "points"), panel.border = element_rect(fill = NA, size = 0.5, colour = "black"), 
+  panel.grid = element_blank(),
+  axis.ticks = element_line(colour = "black") 
+    
+  ) + labs(subtitle = which_title) + theme(plot.subtitle = element_text(face = "bold", hjust = 0.5))
+    # if(unique(.x$disease) != "MS" ){ 
+    #   plot <- plot + theme(axis.text.x = element_blank() )
+    # }
+    return(plot)  
+}
+
+nott_overlap_plot("AD", "Alzheimer's Disease") + 
+ nott_overlap_plot("PD", "Parkinson's Disease") + theme(axis.text.x = element_blank() ) + 
+   nott_overlap_plot("SCZ", "Schizophrenia") + theme(axis.text.x = element_blank() ) + 
+   #nott_overlap_plot("BPD", "Bipolar disorder") + theme(axis.text.x = element_blank() ) + 
+nott_overlap_plot("MS", "Multiple Sclerosis") + theme(axis.text.x = element_blank() ) +
+  plot_layout(ncol = 1,heights = c(1,1,0.5,1), guides = "collect" ) & theme(legend.position = "bottom")
+```
+
+
+```{r fig.height = 3, fig.width = 16}
+# combine microglia annotation with max_R2
+
+summary_plot <- 
+  all_loci_coloc %>%
+  dplyr::group_by(disease, Gene) %>%
+  dplyr::summarise( PP.H4.abf = max(PP.H4.abf)) %>%
+  dplyr::filter( PP.H4.abf > 0.5) %>%
+  dplyr::left_join( dplyr::select(all_loci_coloc, disease,Gene, PP.H4.abf, Dataset, max_R2) )  %>%
+  dplyr::left_join(per_locus_overlaps) %>%
+  dplyr::filter(!is.na(max_R2) ) %>%
+  dplyr::select(disease, Gene, PP.H4.abf, Dataset, max_R2, Locus, Microglia_enhancers, Microglia_promoters) %>%
+  dplyr::mutate( "Microglia enhancers" = as.numeric(Microglia_enhancers > 0), "Microglia promoters" = as.numeric(Microglia_promoters > 0) ) %>%
+  dplyr::select(Dataset, Locus, Gene, disease, "Max LD (R2)" = max_R2, "COLOC H4" = "PP.H4.abf", "Microglia enhancers", "Microglia promoters") %>%
+  tidyr::gather(key = "feature", value = "value", -Dataset, -Locus, -Gene, -disease) %>%
+  dplyr::mutate(count = signif(value, digits = 2)) %>%
+  dplyr::mutate(feature = factor(feature, levels = (c("Microglia enhancers", "Microglia promoters", "Max LD (R2)", "COLOC H4")))) %>%
+  dplyr::mutate(disease = factor(disease, levels = c("AD", "PD", "SCZ", "BPD", "MS"))) %>%
+  dplyr::mutate(Gene = factor(Gene)) %>%
+  #dplyr::mutate(Gene = forcats::fct_rev(Gene)) %>%
+  ggplot(aes(x = Gene, y = feature, label = count)) +
+  geom_tile(aes(fill = value)) +
+  #scale_fill_steps2(low = "white", mid = "green", high = "blue",na.value = "white" midpoint = 0.5, limits = c(0,1), breaks = c(0,0.25,0.5,0.75,1), labels = c(0,0.25,0.5,0.75,1)   ) +
+  scale_fill_gradient(low = "white", high = "darkorange2", limits = c(0,1), breaks = c(0,0.25,0.5,0.75,1), labels = c(0,0.25,0.5,0.75,1) ) +
+  facet_grid(.~disease, scales = "free_x",space = "free_x" ) +
+  scale_y_discrete( expand = c(0,0)) +
+  scale_x_discrete(expand = c(0,0)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust=1, colour = "black")) +
+  labs(x = "", y = "") +
+  theme(
+    legend.position = "bottom", 
+    axis.text = element_text(colour = "black"), 
+    axis.ticks = element_line(colour = "black"),
+    strip.text.x = element_text(angle = 0, face = "bold", colour = "black", hjust = 0.5), 
+    strip.background.x = element_blank(),panel.border = element_rect(fill = NA)
+    ) +
+  labs(fill = "") +
+  guides(fill = guide_colourbar(barwidth = 6, ticks = TRUE, barheight = 0.5, label.position = "bottom",label.vjust = 0) )
+
+summary_plot
+ggsave(plot = summary_plot, filename = "plots/Finemap_epigenomic_summary_plot.pdf", width = 16, height = 3)
+
+```
+
+```{r}
+# all_overlap_res %>%
+#   mutate(snp_distance = abs(GWAS_pos - QTL_pos) ) %>%
+#   ggplot(aes(x = max_R2, y = log10(snp_distance))) + geom_point(aes(colour = disease)) +
+#   facet_wrap(~disease)
+# 
+# 
+# # how to summarise?
+# all_overlap_res %>%
+#   ggplot(aes(x = max_R2, y = Dataset)) + geom_point(aes(colour = Dataset))
+
+# split loci by disease
+loci_by_disease <- split(all_loci_coloc, all_loci_coloc$disease )
+
+```
+
+# MiGA eQTLs 
+
+Fine-mapping and Epigenomic overlap plots
+
+Restricted to loci with R^2 between QTL and GWAS > 0.1 and a COLOC PP H4 > 0.5
+
+## Alzheimer's Disease
+
+```{r fig.width = 10, fig.height = 5}
+filter(loci_by_disease$AD, max_R2 > 0.1) %>% arrange(Locus) %>% pull(overlap_plot)
+```
+
+## Parkinson's Disease
+
+```{r fig.width = 12, fig.height= 5}
+filter(loci_by_disease$PD, max_R2 > 0.1) %>% arrange(Locus) %>% pull(overlap_plot)
+```
+
+## Multiple Sclerosis
+
+```{r fig.width = 10, fig.height= 5}
+#filter(loci_by_disease$MS, max_R2 > 0.1) %>% arrange(Locus) %>% pull(overlap_plot)
+```
+
+## Scizophrenia
+
+```{r fig.width = 10, fig.height= 5}
+#filter(loci_by_disease$SCZ, max_R2 > 0) %>% arrange(Locus) %>% pull(overlap_plot)
+```
+
+## Bipolar Disorder
+
+```{r}
+#filter(loci_by_disease$BPD, max_R2 > 0.1) %>% arrange(Locus) %>% pull(overlap_plot)
+```
+
+
+
+<!-- look into MS4A4A in MS, what's going on there? -->
+
+<!-- ABI3 in Jansen, the Microglia_all_regions top QTL SNP is "rs11655657", which is not a biallelic variant and so LDlink cannot calculate LD. -->
+
+<!-- ## Examples that they want to CRISPR -->
+
+# CRISPR candidates
+
+## USP6NL
+
+```{r fig.height = 12, fig.width = 8}
+# find_overlaps(locus = "BIN1", gene = "BIN1", gwas = "Kunkle_2019") %>%
+#   add_nott_overlap() %>%
+#   plot_overlaps(Nott = TRUE)
+#  
+
+# USP6NL 
+##  USe all 3 AD GWAS - Marioni has best COLOC of 0.95
+
+filter(all_loci, Locus == "ECHDC3", Gene == "USP6NL") %>% pull(overlap_plot) %>% patchwork::wrap_plots() + plot_layout(ncol =1)
+
+all_usp6nl <- filter(all_loci, Locus == "ECHDC3", Gene == "USP6NL") %>% 
+  pull(overlap_df) %>% bind_rows() %>% filter(R2 > 0.5) %>% arrange(desc(R2))
+
+
+usp6nl_df <- 
+  all_usp6nl %>%
+  nott_overlap(set = "Microglia enhancers", return_coordinates = TRUE) %>%
+  dplyr::select(SNP, CHR, POS, label, R2, Microglia_enhancers, Microglia_enhancers_coord_hg19, P, Effect, StdErr, A1, A2, MAF)
+
+write_csv(usp6nl_df,path = "fine_mapping/USP6NL_allGWAS_fine_mapping_results.csv")
+
+usp6nl_bed <- usp6nl_df %>% mutate(START = POS - 1, CHR = paste0("chr", CHR) ) %>% dplyr::select(CHR, START, POS, SNP ) %>% distinct()
+
+write_tsv(usp6nl_bed, path = "fine_mapping/USP6NL_highR2_SNPs.bed", col_names = FALSE)
+
+usp6nl_df %>% createDT()
+
+```
+
+
+## P2RY12 
+
+```{r}
+
+p2ry12 <- filter(all_loci, Locus == "MED12L", Gene == "P2RY12")
+  
+p2ry12 %>% pull(overlap_plot)# %>% patchwork::wrap_plots() + plot_layout(ncol =1)
+
+ 
+p2ry12_df <- 
+  p2ry12$overlap_df[[1]] %>%
+  nott_overlap(set = "Microglia enhancers", return_coordinates = TRUE) %>%
+  dplyr::select(SNP, CHR, POS, label, R2, Microglia_enhancers, Microglia_enhancers_coord_hg19, P, Effect, StdErr, A1, A2, MAF ) %>%
+  arrange(POS)
+
+write_csv(p2ry12_df,path = "fine_mapping/P2RY12_fine_mapping_results.csv")
+
+
+
+
+p2ry12_df  %>% createDT()
+
+```
+
+<!-- # MiGA splicing QTLs -->
+
+
+<!-- ```{r} -->
+
+<!-- all_loci <- all_coloc %>%  -->
+<!--   dplyr::filter(QTL == "MiGA sQTL", PP.H4.abf > 0.5 ) %>%  -->
+<!--   dplyr::filter(Gene != "") %>%   -->
+<!--   dplyr::select(Dataset, Locus, Gene) %>%  -->
+<!--   distinct() %>%  -->
+<!--   filter(paste(Dataset, Locus) %in%  -->
+<!--   paste(all_res$Dataset, all_res$Locus)) #filter(Gene %in% all_coloc$Gene) -->
+
+<!-- sqtl_overlap_rdata <- "data/Fine_Mapping/Microglia_sQTL_overlaps.RData" -->
+
+<!-- if( !file.exists(sqtl_overlap_rdata)){ -->
+
+<!-- # actually run it! -->
+<!-- all_overlaps <-  -->
+<!--   map(1:nrow(all_loci), ~{ -->
+<!--     df <- all_loci[.x,] -->
+<!--     print(.x) -->
+<!--     find_overlaps(locus = df$Locus, gene = df$Gene, gwas = df$Dataset, qtl = "MiGA sQTL") %>% add_nott_overlap() -->
+<!--   } ) -->
+
+<!--   # save as RData -->
+<!--   save(all_overlaps, file = sqtl_overlap_rdata ) -->
+<!-- }else{ -->
+<!--   load(sqtl_overlap_rdata) -->
+<!-- } -->
+
+<!-- #### add list columns to all_loci df -------------- -->
+
+<!-- all_loci$overlap_df <- all_overlaps -->
+
+<!-- all_loci$overlap_plot <- -->
+<!--   map(all_overlaps, ~{ -->
+<!--   if(is.null(.x)){return(NULL)} -->
+<!--   if(nrow(.x) ==0){return(NULL)} -->
+<!--   return(plot_overlaps(.x, Nott = TRUE )) -->
+<!-- }) -->
+
+<!-- # calculate max R2 -->
+<!-- all_loci$max_R2 <-  -->
+<!--   purrr::map_dbl(all_loci$overlap_df, ~{ -->
+<!--     if(is.null(.x)){return(NA)} -->
+<!--     dplyr::filter(.x, label != "QTL Lead SNP") %>% arrange(desc(R2) ) %>% head(1) %>%  -->
+<!--     dplyr::select(Dataset, Locus, Gene, label, max_R2 = R2 ) %>% pull(max_R2) -->
+<!--   }) -->
+
+<!-- # write out all plots -->
+<!-- plotFolder <- "plots/sQTL/" -->
+<!-- #dir.create(plotFolder) -->
+
+<!-- all_loci <- mutate(all_loci, plot_file = paste0(plotFolder, Dataset, "_", Locus, "_", Gene, "_overlap_plot.pdf") ) -->
+
+<!-- for(i in 1:nrow(all_loci) ){ -->
+<!--   #print(all_loci$plot_file[i]) -->
+<!--   if(!is.null(all_loci$overlap_plot[[i]])){ -->
+<!--     ggsave(plot =  all_loci$overlap_plot[[i]], filename = all_loci$plot_file[i], width = 8, height = 4, device = "pdf" ) -->
+<!--   } -->
+<!-- } -->
+
+<!-- ## put together giant table -->
+<!-- mg_coloc <- filter(all_coloc, QTL == "Microglia_all_regions_sQTL") -->
+
+<!-- all_loci_coloc <- left_join(all_loci, mg_coloc, by = c("Locus","Gene", "Dataset") )  -->
+
+<!-- write_tsv(dplyr::select(all_loci_coloc, -overlap_df, -overlap_plot), path = "data/Fine_Mapping/Microglia_sQTL_overlaps.tsv" ) -->
+
+<!-- # ## compare max R2 to coloc strength, SNP distance etc -->
+<!-- # all_overlap_res %>% -->
+<!-- #   ggplot(aes(x = max_R2, y = PP.H4.abf)) + geom_point(aes(colour = disease)) + -->
+<!-- #   facet_wrap(~disease) -->
+<!-- #  -->
+<!-- # all_overlap_res %>% -->
+<!-- #   mutate(snp_distance = abs(GWAS_pos - QTL_pos) ) %>% -->
+<!-- #   ggplot(aes(x = max_R2, y = log10(snp_distance))) + geom_point(aes(colour = disease)) + -->
+<!-- #   facet_wrap(~disease) -->
+<!-- #  -->
+<!-- #  -->
+<!-- # # how to summarise? -->
+<!-- # all_overlap_res %>% -->
+<!-- #   ggplot(aes(x = max_R2, y = Dataset)) + geom_point(aes(colour = Dataset)) -->
+
+<!-- all_loci$disease <- all_coloc$disease[ match(paste(all_loci$Dataset, all_loci$Locus), paste(all_coloc$Dataset, all_coloc$Locus))] -->
+
+<!-- # split loci by disease -->
+<!-- loci_by_disease <- split(all_loci, all_loci$disease ) -->
+
+<!-- ``` -->
+
+
+
+<!-- ## Alzheimer's Disease -->
+
+<!-- ```{r} -->
+<!-- filter(loci_by_disease$AD, max_R2 > 0.1) %>% arrange(Locus) %>% pull(overlap_plot) -->
+<!-- ``` -->
+
+<!-- ## Parkinson's Disease -->
+
+<!-- ```{r} -->
+<!-- filter(loci_by_disease$PD, max_R2 > 0.1) %>% arrange(Locus) %>% pull(overlap_plot) -->
+<!-- ``` -->
+
+<!-- ## Multiple Sclerosis -->
+
+<!-- ```{r} -->
+<!-- filter(loci_by_disease$MS, max_R2 > 0.1) %>% arrange(Locus) %>% pull(overlap_plot) -->
+<!-- ``` -->
+
+<!-- ## Scizophrenia -->
+
+<!-- ```{r} -->
+<!-- filter(loci_by_disease$SCZ, max_R2 > 0) %>% arrange(Locus) %>% pull(overlap_plot) -->
+<!-- ``` -->
+
+<!-- ## Bipolar Disorder -->
+
+<!-- ```{r} -->
+<!-- filter(loci_by_disease$BPD, max_R2 > 0.1) %>% arrange(Locus) %>% pull(overlap_plot) -->
+<!-- ``` -->
+
+<!-- ## PD -->
+
+<!-- ```{r} -->
+
+<!-- pd_coloc <- filter(all_coloc, disease == "PD", QTL == "Microglia_all_regions") %>% -->
+<!--   left_join(coloc_loci, by = c("GWAS" = "Dataset", "locus" = "Locus")) %>% -->
+<!--   filter(fine_mapped == TRUE) -->
+
+
+<!-- pd_coloc <- filter(all_coloc, QTL == "Microglia_all_regions", disease == "PD", PP.H4.abf > 0.5) -->
+
+<!-- #all_pd_loci <- pd_coloc %>% select(Study = GWAS, Locus = locus, Gene = QTL_Gene) %>% distinct() -->
+
+
+
+
+<!-- all_pd_loci <- all_res %>% dplyr::filter(Study %in% c("Nalls23andMe_2019") ) %>% dplyr::filter(Gene != "") %>%  dplyr::select(Study, Locus, Gene) %>% distinct() %>% filter(Gene %in% all_coloc$Gene) -->
+
+<!-- pd_overlaps <-  -->
+<!--   map(1:nrow(all_pd_loci), ~{ -->
+<!--   df <- all_pd_loci[.x,] -->
+<!--   print(.x) -->
+<!--   find_overlaps(locus = df$Locus, gene = df$Gene, gwas = df$Study) %>% add_nott_overlap() -->
+
+<!--   } ) -->
+
+
+<!-- # tabulate - what is the maximum LD a fine-mapped GWAS SNP has with its QTL lead SNP? -->
+<!-- pd_overlap_res <-   -->
+<!--   purrr::map_df(pd_overlaps, ~{ -->
+<!--   if(is.null(.x)){return(NULL)} -->
+<!--   dplyr::filter(.x, label != "QTL Lead SNP") %>% arrange(desc(R2) ) %>% head(1) %>%  -->
+<!--   dplyr::select(Dataset, Locus, Gene, label, max_R2 = R2 ) -->
+<!-- }) #%>% dplyr::arrange(desc(max_R2)) -->
+
+<!-- pd_overlap_res -->
+
+<!-- pd_overlap_plots <- -->
+<!--   map(pd_overlaps, ~{ -->
+<!--   if(is.null(.x)){return(NULL)} -->
+<!--   if(nrow(.x) ==0){return(NULL)} -->
+<!--   df <- filter(.x, label != "QTL Lead SNP") %>%  -->
+<!--     arrange(desc(R2) ) %>%  -->
+<!--     head(1)  -->
+<!--   if(nrow(df) == 0){return(NULL)} -->
+<!--   #print(df) -->
+<!--   if(df$R2 > 0.5){ -->
+<!--     return(plot_overlaps(.x, Nott = TRUE)) -->
+<!--   } -->
+<!-- }) -->
+
+<!-- pd_overlap_plots -->
+
+<!-- ``` -->
+
+<!-- # AD -->
+
+<!-- ```{r} -->
+<!-- ad_coloc <- filter(all_coloc, QTL == "Microglia_all_regions", disease == "AD", PP.H4.abf > 0.5) -->
+
+<!-- all_ad_loci <- ad_coloc %>% dplyr::select(Dataset, Locus, Gene) %>% distinct() -->
+
+<!-- # all_ad_loci <- all_res %>% filter(Study %in% c("Kunkle_2019", "Marioni_2018", "Lambert_2013", "Jansen_2018") ) %>%  -->
+<!-- #   filter(Gene %in% ad_coloc$QTL_Gene) %>%   -->
+<!-- #   select(Study, Locus, Gene) %>% -->
+<!-- #   distinct() -->
+
+<!-- ad_loci_overlaps <-  -->
+<!--   map(1:nrow(all_ad_loci), ~{ -->
+<!--   df <- all_ad_loci[.x,] -->
+<!--   print(.x) -->
+<!--   find_overlaps(locus = df$Locus, gene = df$Gene, gwas = df$Dataset) %>% add_nott_overlap() -->
+
+<!--   } ) -->
+
+
+<!-- # tabulate - what is the maximum LD a fine-mapped GWAS SNP has with its QTL lead SNP? -->
+<!-- ad_overlap_res <-   -->
+<!--   purrr::map_df(ad_loci_overlaps, ~{ -->
+<!--   if(is.null(.x)){return(NULL)} -->
+<!--   dplyr::filter(.x, label != "QTL Lead SNP") %>% arrange(desc(R2) ) %>% head(1) %>%  -->
+<!--   dplyr::select(Dataset, Locus, Gene, label, max_R2 = R2 ) -->
+<!-- }) #%>% dplyr::arrange(desc(max_R2)) -->
+
+
+<!-- ad_overlap_plots <- -->
+<!--   map(ad_loci_overlaps, ~{ -->
+<!--   if(is.null(.x)){return(NULL)} -->
+<!--   if(nrow(.x) ==0){return(NULL)} -->
+<!--   df <- filter(.x, label != "QTL Lead SNP") %>%  -->
+<!--     arrange(desc(R2) ) %>%  -->
+<!--     head(1)  -->
+<!--   if(nrow(df) == 0){return(NULL)} -->
+<!--   #print(df) -->
+<!--   if(df$R2 > 0.5){ -->
+<!--     return(plot_overlaps(.x, Nott = TRUE)) -->
+<!--   } -->
+<!-- }) -->
+
+<!-- ad_overlap_plots -->
+
+
+<!-- mg_coloc <- filter(all_coloc, QTL == "Microglia_all_regions", disease == "AD") -->
+
+<!-- ad_overlap_coloc <- inner_join(ad_overlap_res, mg_coloc, by = c("Dataset" = "GWAS", "Locus" = "locus", "Gene" = "QTL_Gene")) -->
+
+<!-- select(ad_overlap_coloc, max_R2, PP.H4.abf) -->
+
+<!-- ad_overlap_coloc %>% -->
+<!--   ggplot(aes(x = PP.H4.abf, y = max_R2, colour = Dataset)) + geom_point() #+ -->
+<!--   #geom_text_repel(aes(label = Gene)) -->
+
+<!-- plot(ad_overlap_coloc$max_R2, ad_overlap_coloc$PP.H4.abf) -->
+
+<!-- find_overlaps(gwas = "Kunkle_2019", locus =	"IQCK", gene = "KNOP1" ) %>% plot_overlaps() -->
+
+
+<!-- ``` -->
+
+<!-- Issues: -->
+
+<!-- some AD loci apparently missing from Brian's Fine-Mapping results - PICALM in Marioni for example -->
+
+<!-- LD-matching - there are still sets of SNPs where LD cannot be found at all - look into -->
+
+<!-- COLOC - is lead QTL SNP always the same SNP that Brian was using? check. -->
+
+<!-- PD is stil missing - hopefully Brian will update the merged file tomorrow. -->
+
+
+
+
+
+<!-- 12 out of 18 of the PD COLOCs have a max R2 > 0.1, with 8 out of 18 having a max R2 > 0.8. -->
+
+<!-- Even though COLOC does not use LD information, it is highlighting eQTLs that are often in strong LD with either the GWAS lead variant or fine-mapped variants. -->
+
+<!-- Brian is missing a lot of AD loci here, KAT8 for example -->
+
+<!-- Locus names will be a problem. -->
+
+
+<!-- ## Epigenomic Annotations -->
+
+<!-- Window around 500-1kb -->
+<!-- Overlap -->
+
+
+
+
+
