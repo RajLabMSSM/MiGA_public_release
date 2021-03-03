@@ -62,7 +62,7 @@ knitr::opts_chunk$set(
 #param = SnowParam(1, "SOCK", progressbar=TRUE) # Didn't work with different number of cores. 
 #register(param)
 
-register(MulticoreParam(workers = 20), default = TRUE)
+register(MulticoreParam(workers = 4), default = TRUE)
 ```
 
 ```{r Helper Functions, echo=FALSE}
@@ -136,9 +136,9 @@ samples_control
 ## Dream analysis {.tabset .tabset-fade .tabset-pills} 
 **Depression** (74 samples) is a sub-group of the main_diagnosis **Psychiatric diagnosis**. 
 ```{r dream, echo=TRUE}
-params = BiocParallel::MulticoreParam(workers=20, progressbar=T)
+params = BiocParallel::MulticoreParam(workers=4, progressbar=T)
 register(params)
-registerDoParallel(20)
+registerDoParallel(4)
 
 # To include cause of death and C1-C4
 metadata4deg$cause_of_death_categories[metadata4deg$cause_of_death_categories %in% NA] <- "Other"
