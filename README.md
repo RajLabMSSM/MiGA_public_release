@@ -8,7 +8,20 @@
  <img src="https://github.com/RajLabMSSM/MiGA_public_release/blob/main/Fig1.png?raw=true">
 </p>
 
-Figure 1: Overview of the MiGA study. 
+**Figure 1:** Overview of the MiGA study. 
+
+1.Looking at covariates:
+ - [Variance partition](https://rajlabmssm.github.io/MiGA_public_release/exploratory_analysis/01_VP_255s.html) plots. Includes pairwise correlation plot, VP for 255 samples (major 4 brain regions), VP by tissue and VP for Eu
+ropean only (N=216).
+
+2.Exploratory Analysis:
+ - [Exploratory plots after filters](https://rajlabmssm.github.io/MiGA_public_release/exploratory_analysis/02_exploratory_filtered.html). General counts for age, sex, cause of death ... with 255 samples.
+
+ - The [PCAs are here](https://rajlabmssm.github.io/MiGA_public_release/exploratory_analysis/03_PCAs_3rd.html).
+
+ - [Linear regression](https://rajlabmssm.github.io/MiGA_public_release/exploratory_analysis/linear_reg_pinkheatmap.html) between the first 15 PCs and the covariates.
+
+3.[Expression of markers](https://rajlabmssm.github.io/MiGA_public_release/exploratory_analysis/04_check_markers.html) genes for 255 samples.
 
 ***************************************
 Differential expression analysis - PAIRWISE
