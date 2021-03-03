@@ -6,4 +6,12 @@
 
 ![Fig1](fig1.png)
 
+***************************************
+Differential expression analysis for different DIAGNOSIS
+***************************************
+Using Dream: 
+ - [Depression x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_depressionxct_dream.html). Depression = 74 samples, Control = 96 samples. 
+
+ - [Dementia x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_dementiaxct_dream.html). Dementia = 15 samples, Control = 96 samples. 
+
 
