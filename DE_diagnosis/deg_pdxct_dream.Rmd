@@ -1,0 +1,276 @@
+---
+title: "Differential expression analysis"
+subtitle: "PD x CT"
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> Using Dream | 
+> PD x CT. 
+
+<div style="text-align: justify"> 
+**D**ifferential expression for **re**pe**a**ted **m**easures (**dream**) uses a linear model model to increase power and decrease false positives for RNA-seq datasets with multiple measurements per individual. The analysis fits seamlessly into the widely used workflow of limma/voom (Law et al. 2014). 
+</div>
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+if(!require("limma")) install.packages("limma"); library("limma")
+#if(!require("DESeq2")) install.packages("DESeq2"); library("DESeq2")
+if(!require("edgeR")) install.packages("edgeR"); library("edgeR")
+if(!require("RColorBrewer")) install.packages("RColorBrewer"); library("RColorBrewer")
+if(!require("gplots")) install.packages("gplots"); library("gplots")
+if(!require("ggplot2")) install.packages("ggplot2"); library("ggplot2")
+if(!require("reshape2")) install.packages("reshape2"); library("reshape2")
+if(!require("variancePartition")) BiocManager::install("variancePartition"); library("variancePartition")
+if(!require("BiocParallel")) install.packages("BiocParallel"); library("BiocParallel")
+if(!require("statmod")) install.packages("statmod"); library("statmod")
+if(!require("ggpubr")) install.packages("ggpubr"); library("ggpubr")
+library('BiocParallel')
+library('doParallel')
+library(dplyr)
+library(tidyr)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+
+#param = SnowParam(1, "SOCK", progressbar=TRUE) # Didn't work with different number of cores. 
+#register(param)
+
+register(MulticoreParam(workers = 4), default = TRUE)
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r folders, echo=TRUE}
+expression_dir = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/expr_4brain_regions/"
+work_plots = "~/pd-omics/katia/Microglia/MiGA_public_release/DE_diagnosis/"
+metadata_path = "~/pd-omics/katia/Microglia/mic_255s/metadata_files/"
+```
+
+```{r input.data, echo=TRUE}
+load(paste0(expression_dir, "Expression_filt_255s.Rdata")) 
+#dim(genes_counts_exp_3rd) # 19376   255
+
+load(paste0(metadata_path, "metadata_255filt_eng_29jun2020.Rdata"))
+#str(metadata3rd_pass)
+```
+
+## Preparing the data for DEG
+```{r pick.samples, echo=TRUE}
+metadata <- metadata3rd_pass
+
+samples_case = as.character(metadata$donor_tissue[metadata$main_diagnosis %in% "Parkinson"])
+samples_control = as.character(metadata$donor_tissue[metadata$main_diagnosis %in% "Control"])
+
+rownames(metadata) <- metadata$donor_tissue
+
+#To pick up only the samples for DEG analysis
+genes_counts4deg = genes_counts_exp_3rd[, colnames(genes_counts_exp_3rd) %in% c(samples_case,samples_control) ]
+metadata4deg = metadata[rownames(metadata) %in% c(samples_case,samples_control) ,]
+
+# all(rownames(metadata4deg) == colnames(genes_counts4deg)) # # The rownames of the metadata needs to be in the same order as colnames expression table 
+# str(metadata4deg) #shows class for all columns 
+# table(metadata4deg$main_diagnosis)
+```
+
+## Samples for DEG
+### Number of case samples 
+```{r num.cases, echo=TRUE}
+length(samples_case)
+```
+
+### Case samples
+```{r samples.case, echo=TRUE}
+samples_case
+```
+
+### Number of control samples 
+```{r num.control, echo=TRUE}
+length(samples_control)
+```
+
+### Control samples
+```{r samples.control, echo=TRUE}
+samples_control
+```
+
+## Dream analysis {.tabset .tabset-fade .tabset-pills} 
+```{r dream, echo=TRUE}
+params = BiocParallel::MulticoreParam(workers=4, progressbar=T)
+register(params)
+registerDoParallel(4)
+
+# To include cause of death and C1-C4
+metadata4deg$cause_of_death_categories[metadata4deg$cause_of_death_categories %in% NA] <- "Other"
+# table(metadata4deg$cause_of_death_categories)
+
+metadata4deg$C1 = metadata4deg$C1 %>% replace_na(median(metadata4deg$C1, na.rm = T))
+metadata4deg$C2 = metadata4deg$C2 %>% replace_na(median(metadata4deg$C2, na.rm = T))
+metadata4deg$C3 = metadata4deg$C3 %>% replace_na(median(metadata4deg$C3, na.rm = T))
+metadata4deg$C4 = metadata4deg$C4 %>% replace_na(median(metadata4deg$C4, na.rm = T))
+
+# Check variance partition version 
+# packageVersion("variancePartition")  # Must be 1.17.7
+
+# The variable to be tested should be a fixed effect
+form <- ~ main_diagnosis + sex + (1|donor_id) + age + tissue + (1|cause_of_death_categories) + C1 + C2 + C3 + C4 + picard_pct_mrna_bases + picard_summed_median + picard_pct_ribosomal_bases
+
+# estimate weights using linear mixed model of dream
+vobjDream = suppressWarnings( voomWithDreamWeights( genes_counts4deg, form, metadata4deg ) ) # supressing messages because of Biocparallel was generating a lot of messages  
+ 
+# Fit the dream model on each gene
+# By default, uses the Satterthwaite approximation for the hypothesis test
+fitmm = suppressWarnings (dream( vobjDream, form, metadata4deg )) 
+
+# Examine design matrix
+# createDT(fitmm$design, 3)
+
+res_dream <- data.frame(topTable(fitmm, coef='main_diagnosisParkinson', 
+                                 number=nrow(genes_counts4deg), sort.by = "p"), check.names = F)
+```
+
+The t-statistics are not directly comparable since they have different degrees of freedom. In order to be able to compare test statistics, we report z.std which is the p-value transformed into a signed z-score. This can be used for downstream analysis.
+
+## DE genes 15% 
+```{r dream.deg015, echo=TRUE, results='asis'}
+length(which(res_dream$adj.P.Val<0.15))
+```
+
+## DE genes 10% 
+```{r dream.deg010, echo=TRUE, results='asis'}
+length(which(res_dream$adj.P.Val<0.10))
+```
+
+## DE genes 5% 
+```{r dream.deg005, echo=TRUE, results='asis'}
+length(which(res_dream$adj.P.Val<0.05))
+```
+
+## Plots from Dream {.tabset .tabset-fade .tabset-pills}
+### P Value Distribution {.tabset .tabset-fade .tabset-pills}
+```{r design0.pvalue, echo=TRUE, res=300}
+res = res_dream
+p = ggplot(res, aes(P.Value))
+p + geom_density(color="darkblue", fill="lightblue") +
+  theme_classic() +
+  ggtitle("FDR Distribution")
+```
+
+### Fold Change Distribution {.tabset .tabset-fade .tabset-pills}
+```{r design0.FC, echo=TRUE, res = 300}
+p = ggplot(res, aes(logFC))
+p + geom_density(color = "darkblue", fill = "lightblue") + 
+  theme_classic() +
+  ggtitle("Fold Change Distribution")
+```
+
+### MA Plot {.tabset .tabset-fade .tabset-pills}
+```{r design0.MA, echo=TRUE, res = 300}
+plot.data = res
+plot.data$id = rownames(plot.data)
+data = data.frame(plot.data)
+data$P.Value = -log10(data$P.Value)
+data$fifteen = as.factor(abs(data$adj.P.Val < 0.05))
+
+ma = ggplot(data, aes(AveExpr, logFC, color = fifteen))
+ma + geom_point() +
+  scale_color_manual(values = c("black", "red"), labels = c ("> 0.05", "< 0.05")) +
+  labs(title = "MA plot", color = "labels") +
+  theme_classic()
+  #theme(plot.title = element_text(hjust = 0.5)) + ylim (-10,10) + xlim(-4,22)
+
+```
+
+### Volcano Plot {.tabset .tabset-fade .tabset-pills}
+```{r design0.Volcano, echo=TRUE, res = 300}
+vp = ggplot(data, aes(logFC, P.Value, color = fifteen))
+vp + geom_point() +
+  scale_color_manual(values = c("black", "red"), labels = c("> 0.05", "< 0.05")) + 
+  labs(title = "Gene Level Volcano Plot", color = "FDR") +
+  #theme(plot.title = element_text(hjust = 0.5)) +
+  theme_classic() +
+  xlim(-10,10) + ylim(0, 10) + ylab("-log10 pvalue")
+
+```
+
+## DEG table for download
+```{r design0.lists, echo=TRUE}
+## Get conversion table for Gencode 30
+gencode_30 = read.table("~/pd-omics/katia/ens.geneid.gencode.v30")
+colnames(gencode_30) = c("ensembl","symbol")
+
+res$ensembl = rownames(res)
+res_name = merge(res, gencode_30, by="ensembl")
+rownames(res_name) = res_name$ensembl
+res_name = res_name[order(res_name$adj.P.Val), ]
+res_name = res_name[, c("symbol", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "z.std")]
+   
+createDT(res_name)
+
+write.table(res_name, file = paste0(work_plots, "PDxCT_dream_3rd.txt"), quote = F, sep = "\t")
+
+```
+
+### Directionality 
+LogFC > 0 is up in Case from **Dream**. 
+```{r direction5, echo=TRUE, fig.width=10, fig.height=8, res=300}
+top_6 = head(res_name)
+top_6$ensembl = rownames(top_6)
+rownames(metadata4deg) = metadata4deg$donor_tissue
+genes_voom = genes_counts_voom_3rd[, rownames(metadata4deg)] # Voom 1st pass only for the samples used in this comparison 
+gene2check = as.data.frame( genes_voom[rownames(top_6) ,])
+gene2check$ensembl = rownames(gene2check)
+gene2check = merge(gene2check, top_6[, c("symbol", "ensembl")], by = "ensembl")
+
+gene2check_m = melt(gene2check, id.vars = c("ensembl", "symbol"))
+gene2check_charac = merge(gene2check_m, metadata4deg, by.x = "variable", by.y = "donor_tissue")
+
+ggplot(gene2check_charac, aes(x = main_diagnosis, y = value, fill = main_diagnosis)) +
+  geom_boxplot(notch = F, na.rm = T, outlier.color = NA) +
+  geom_jitter() +
+  theme_classic() + 
+  facet_wrap(~symbol, scales = "free_y") +
+  ggpubr::stat_compare_means(label = "p.format", label.x.npc = "centre", method = "wilcox.test")
+```
+
+```{r session, echo=TRUE}
+sessionInfo()
+```
