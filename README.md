@@ -1,4 +1,4 @@
-## Omics analysis for Microglia project
+## Omics analysis for the Microglia project
 
 > This repository includes code and plots. Exploratory analysis and intermediate processing files are too large for this repository.
 
@@ -11,8 +11,7 @@
 **Figure 1:** Overview of the MiGA study. 
 
 1.Looking at covariates:
- - [Variance partition](https://rajlabmssm.github.io/MiGA_public_release/exploratory_analysis/01_VP_255s.html) plots. Includes pairwise correlation plot, VP for 255 samples (major 4 brain regions), VP by tissue and VP for Eu
-ropean only (N=216).
+ - [Variance partition](https://rajlabmssm.github.io/MiGA_public_release/exploratory_analysis/01_VP_255s.html) plots. Includes pairwise correlation plot, VP for 255 samples, VP by region and VP for European only (N=216).
 
 2.Exploratory Analysis:
  - [Exploratory plots after filters](https://rajlabmssm.github.io/MiGA_public_release/exploratory_analysis/02_exploratory_filtered.html). General counts for age, sex, cause of death ... with 255 samples.
