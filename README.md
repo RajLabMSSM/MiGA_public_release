@@ -65,15 +65,15 @@ Differential expression analysis for different DIAGNOSIS
 ```
 Covariates: ~ main_diagnosis + sex + (1|donor_id) + age + tissue + (1|cause_of_death_categories) + C1 + C2 + C3 + C4 + picard_pct_mrna_bases + picard_summed_median + picard_pct_ribosomal_bases
 ```
- - [Depression x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_depressionxct_dream.html).
+ - [Depression x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_depressionxct_dream.html)
 
- - [Dementia x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_dementiaxct_dream.html).
+ - [Dementia x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_dementiaxct_dream.html)
 
- - [Psychiatric diagnosis x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_psychiatricDiagxct_dream.html).
+ - [Psychiatric diagnosis x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_psychiatricDiagxct_dream.html)
 
- - [Schizophrenia + Bipolar x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_schizophrenia_bipolarxCT_dream.html).
+ - [Schizophrenia + Bipolar x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_schizophrenia_bipolarxCT_dream.html)
 
- - [Parkinson's x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_pdxct_dream.html).
+ - [Parkinson's x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_pdxct_dream.html)
 
 Number of DE genes by comparison from Dream:
 
@@ -148,3 +148,15 @@ Tissue specific effects: [lfsr at 5%](https://rajlabmssm.github.io/glia_omics/3r
 **************************************
 Colocalization and fine-mapping
 ***************************************
+
+ - [Qvalue sharing](https://rajlabmssm.github.io/MiGA_public_release/qtl_analysis/qvalue_sharing.html). Includes heatmap. 
+
+ - [Locus zoom plots](https://rajlabmssm.github.io/MiGA_public_release/qtl_analysis/locus_zoom_plots.html).
+
+ - [Full COLOC visualization](https://rajlabmssm.github.io/MiGA_public_release/qtl_analysis/coloc_results.html).
+
+ - Fine Mapping [COLOC PLAC-Seq](https://rajlabmssm.github.io/MiGA_public_release/qtl_analysis/coloc_fine_mapping_plac_seq.html).
+
+ - Fine-mapping and [COLOC overlaps](https://rajlabmssm.github.io/MiGA_public_release/coloc_fine_mapping_overlaps.html).
+
+
