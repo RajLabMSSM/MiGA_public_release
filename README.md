@@ -118,7 +118,7 @@ Number of eGenes by brain region, including different number of PEER factors. [C
 
 You can check the lists of **eGenes**, by brain region [in this link](https://rajlabmssm.github.io/MiGA_public_release/qtl_pages/eQTLs_list_2nd.html).
 
-Number of eGenes (2nd pass - includes covariate file with age, sex and 4 MDS ancestry):
+Number of eGenes (includes covariate file with age, sex and 4 MDS ancestry):
 
 | Tissue  | Sample size | eGenes at qval 5% | eGenes at qval 10% |
 | ------------- | ------ | ------ | ------ |
