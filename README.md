@@ -85,6 +85,16 @@ Number of DE genes by comparison from Dream:
 | Schizophrenia + Bipolar x CT  | 0 |
 | Parkinson's x CT  | 0 |
 
+***************************************
+Age-related Analysis
+***************************************
 
+[Our age-related](https://rajlabmssm.github.io/MiGA_public_release/age-related_analysis/age_dream_3ndpass.html) analysis using the tool Dream (N=255). removeBatchEffect to remove confounders from the expression table. 
 
-TEST
+[Effect size correlation](https://rajlabmssm.github.io/MiGA_public_release/age-related_analysis/effect_size_age.html) plots.
+
+DE genes with [interaction term](https://rajlabmssm.github.io/MiGA_public_release/age-related_analysis/age_dream_3ndpass_interaction.html). Include scatter plots by region.
+
+***************************************
+Colocalization and fine-mapping
+***************************************
