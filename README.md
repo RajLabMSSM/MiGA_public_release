@@ -157,6 +157,6 @@ Colocalization and fine-mapping
 
  - Fine Mapping [COLOC PLAC-Seq](https://rajlabmssm.github.io/MiGA_public_release/qtl_analysis/coloc_fine_mapping_plac_seq.html).
 
- - Fine-mapping and [COLOC overlaps](https://rajlabmssm.github.io/MiGA_public_release/coloc_fine_mapping_overlaps.html).
+ - Fine-mapping and [COLOC overlaps](https://rajlabmssm.github.io/MiGA_public_release/qtl_analysis/coloc_fine_mapping_overlaps.html).
 
 
