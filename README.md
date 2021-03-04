@@ -42,16 +42,16 @@ Covariates: ~ sex + (1|donor_id) + age + tissue + (1|cause_of_death_categories) 
 
 Number of DE genes by comparison from Dream:
 ```
-Filtered by: adj.P.Val<0.05 & AveExpr > 0 & abs(logFC) > 0.5
+Filtered by: adj.P.Val<0.05 & AveExpr > 0 & abs(logFC) > 1
 ```
 | Comparison  | Genes |
 | ------------- | ------ |
-| MFG x STG  | 96  |
-| THA x SVZ  | 1470 |
-| MFG x SVZ  | 2378 |
-| THA x STG  | 1109 |
-| THA x MFG  | 940  |
-| SVZ x STG  | 3950 |
+| MFG x STG  | 6 |
+| THA x SVZ  | 387 |
+| MFG x SVZ  | 609 |
+| THA x STG  | 105 |
+| THA x MFG  | 119 |
+| SVZ x STG  | 909 |
 
 ***************************************
 Sex-related analysis
@@ -87,4 +87,4 @@ Number of DE genes by comparison from Dream:
 
 
 
-
+TEST
