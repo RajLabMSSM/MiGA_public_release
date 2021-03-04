@@ -1,0 +1,224 @@
+---
+title: "Results from e-QTL"
+subtitle: "by Brain region"
+authors:  |
+ | 
+ | Katia de Paiva Lopes
+ | Ricardo A Vialle
+ | Jack Humphrey
+ | 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+library(ggplot2)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r eqtl_peer}
+## eQTL results 
+get_egene_by_peer = function(tissue){
+  work_results = paste0("~/pd-omics/katia/Microglia/mic_314s/eQTL_mic/2nd_pass_eQTL/EUR/QTL-mapping-pipeline/results/",tissue,"_eur_expression")
+
+  peer0 = read.table(gzfile(paste0(work_results, "/peer0/",tissue,"_eur_expression_peer0.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer0) = peer0$phenotype_id
+
+  peer5 = read.table(gzfile(paste0(work_results, "/peer5/",tissue,"_eur_expression_peer5.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer5) = peer5$phenotype_id
+
+  peer10 = read.table(gzfile(paste0(work_results, "/peer10/",tissue,"_eur_expression_peer10.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer10) = peer10$phenotype_id
+
+  peer15 = read.table(gzfile(paste0(work_results, "/peer15/",tissue,"_eur_expression_peer15.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer15) = peer15$phenotype_id
+
+  peer20 = read.table(gzfile(paste0(work_results, "/peer20/",tissue,"_eur_expression_peer20.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer20) = peer20$phenotype_id
+
+  egene_by_peer = data.frame(peer = c(0,5,10,15,20), egene = c(sum(peer0$qval < 0.05),
+                                                               sum(peer5$qval < 0.05),
+                                                               sum(peer10$qval < 0.05),
+                                                               sum(peer15$qval < 0.05),
+                                                               sum(peer20$qval < 0.05)), tissue = tissue)
+
+  return(egene_by_peer)
+}
+
+MFG = get_egene_by_peer("MFG")
+STG = get_egene_by_peer("STG")
+THA = get_egene_by_peer("THA")
+SVZ = get_egene_by_peer("SVZ")
+
+all_egenes = rbind(MFG, STG, THA, SVZ)
+
+# All e-genes are significative! 
+```
+
+## eGenes by PEER: qval 5% 
+```{r e_plot_5per, fig.width=6, fig.height=5}
+ggplot2::ggplot(all_egenes, aes(x = peer, y = egene, color=tissue)) + 
+  geom_point() +
+  geom_line() + 
+  scale_x_continuous(breaks = c(0, 5, 10, 15,20)) +
+  scale_y_continuous(breaks = c(50, 100, 150, 200, 250,300)) +
+  labs(x = "PEER factors", y = "Number of e-genes") +
+  theme_classic()
+```
+
+## eGenes table: qval 5%
+Number of eGenes by the best PEER factor. 
+```{r eGenes_sample_5per}
+files4eqtl = "~/pd-omics/katia/Microglia/mic_314s/eQTL_mic/files4eQTL/"
+
+key_MFG = read.table(paste0(files4eqtl, "MFG_sample_key.txt"), header = T, stringsAsFactors = F, check.names = F)
+#length(unique(key_MFG$participant_id))
+
+key_STG = read.table(paste0(files4eqtl, "STG_sample_key.txt"), header = T, stringsAsFactors = F, check.names = F)
+#length(unique(key_STG$participant_id))
+
+key_THA = read.table(paste0(files4eqtl, "THA_sample_key.txt"), header = T, stringsAsFactors = F, check.names = F)
+#length(unique(key_THA$participant_id))
+
+key_SVZ = read.table(paste0(files4eqtl, "SVZ_sample_key.txt"), header = T, stringsAsFactors = F, check.names = F)
+#length(unique(key_SVZ$participant_id))
+
+best_peer_by_sample = all_egenes[all_egenes$peer == 10 ,] #Peer factor with more e-genes
+
+best_peer_by_sample$num_samples = 0  
+best_peer_by_sample$num_samples[best_peer_by_sample$tissue == "MFG"] <- length(unique(key_MFG$participant_id))
+best_peer_by_sample$num_samples[best_peer_by_sample$tissue == "STG"] <- length(unique(key_STG$participant_id))  
+best_peer_by_sample$num_samples[best_peer_by_sample$tissue == "THA"] <- length(unique(key_THA$participant_id)) 
+best_peer_by_sample$num_samples[best_peer_by_sample$tissue == "SVZ"] <- length(unique(key_SVZ$participant_id)) 
+
+best_peer_by_sample$peer[best_peer_by_sample$tissue == "SVZ"] <- 5
+best_peer_by_sample$egene[best_peer_by_sample$tissue == "SVZ"] <- all_egenes$egene[all_egenes$tissue %in% "SVZ" & all_egenes$peer == 5]
+
+createDT(best_peer_by_sample)
+```
+
+```{r eqtl_peer_10per}
+## eQTL results 
+get_egene_by_peer = function(tissue){
+  work_results = paste0("~/pd-omics/katia/Microglia/mic_314s/eQTL_mic/2nd_pass_eQTL/EUR/QTL-mapping-pipeline/results/",tissue,"_eur_expression")
+
+  peer0 = read.table(gzfile(paste0(work_results, "/peer0/",tissue,"_eur_expression_peer0.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer0) = peer0$phenotype_id
+
+  peer5 = read.table(gzfile(paste0(work_results, "/peer5/",tissue,"_eur_expression_peer5.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer5) = peer5$phenotype_id
+
+  peer10 = read.table(gzfile(paste0(work_results, "/peer10/",tissue,"_eur_expression_peer10.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer10) = peer10$phenotype_id
+
+  peer15 = read.table(gzfile(paste0(work_results, "/peer15/",tissue,"_eur_expression_peer15.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer15) = peer15$phenotype_id
+
+  peer20 = read.table(gzfile(paste0(work_results, "/peer20/",tissue,"_eur_expression_peer20.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+  rownames(peer20) = peer20$phenotype_id
+
+  egene_by_peer = data.frame(peer = c(0,5,10,15,20), egene = c(sum(peer0$qval < 0.10),
+                                                               sum(peer5$qval < 0.10),
+                                                               sum(peer10$qval < 0.10),
+                                                               sum(peer15$qval < 0.10),
+                                                               sum(peer20$qval < 0.10)), tissue = tissue)
+
+  return(egene_by_peer)
+}
+
+MFG = get_egene_by_peer("MFG")
+STG = get_egene_by_peer("STG")
+THA = get_egene_by_peer("THA")
+SVZ = get_egene_by_peer("SVZ")
+
+all_egenes = rbind(MFG, STG, THA, SVZ)
+
+# All e-genes are significative! 
+```
+
+## eGenes by PEER: qvalue 10% 
+```{r e_plot_10per, fig.width=6, fig.height=5}
+ggplot2::ggplot(all_egenes, aes(x = peer, y = egene, color=tissue)) + 
+  geom_point() +
+  geom_line() + 
+  scale_x_continuous(breaks = c(0, 5, 10, 15,20)) +
+  scale_y_continuous(breaks = c(50, 100, 150, 200, 250,300)) +
+  labs(x = "PEER factors", y = "Number of e-genes") +
+  theme_classic()
+```
+
+## eGenes table: qvalue 10%
+```{r eGenes_sample_10per}
+files4eqtl = "~/pd-omics/katia/Microglia/mic_314s/eQTL_mic/files4eQTL/"
+
+key_MFG = read.table(paste0(files4eqtl, "MFG_sample_key.txt"), header = T, stringsAsFactors = F, check.names = F)
+#length(unique(key_MFG$participant_id))
+
+key_STG = read.table(paste0(files4eqtl, "STG_sample_key.txt"), header = T, stringsAsFactors = F, check.names = F)
+#length(unique(key_STG$participant_id))
+
+key_THA = read.table(paste0(files4eqtl, "THA_sample_key.txt"), header = T, stringsAsFactors = F, check.names = F)
+#length(unique(key_THA$participant_id))
+
+key_SVZ = read.table(paste0(files4eqtl, "SVZ_sample_key.txt"), header = T, stringsAsFactors = F, check.names = F)
+#length(unique(key_SVZ$participant_id))
+
+best_peer_by_sample = all_egenes[all_egenes$peer == 10 ,] #Peer factor with more e-genes
+
+best_peer_by_sample$num_samples = 0  
+best_peer_by_sample$num_samples[best_peer_by_sample$tissue == "MFG"] <- length(unique(key_MFG$participant_id))
+best_peer_by_sample$num_samples[best_peer_by_sample$tissue == "STG"] <- length(unique(key_STG$participant_id))  
+best_peer_by_sample$num_samples[best_peer_by_sample$tissue == "THA"] <- length(unique(key_THA$participant_id)) 
+best_peer_by_sample$num_samples[best_peer_by_sample$tissue == "SVZ"] <- length(unique(key_SVZ$participant_id)) 
+
+best_peer_by_sample$peer[best_peer_by_sample$tissue == "SVZ"] <- 5
+best_peer_by_sample$egene[best_peer_by_sample$tissue == "SVZ"] <- all_egenes$egene[all_egenes$tissue %in% "SVZ" & all_egenes$peer == 5]
+
+createDT(best_peer_by_sample)
+```
+
+
+```{r}
+sessionInfo()
+```
+

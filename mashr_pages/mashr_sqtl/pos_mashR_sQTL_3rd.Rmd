@@ -1,0 +1,185 @@
+---
+title: "Post mashR pipeline"
+subtitle: "sQTL"
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> Previous pipeline: https://github.com/RajLabMSSM/mashR 
+
+> GTEx paper: https://www.nature.com/articles/s41588-018-0268-8 
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+library("lattice")
+library("dplyr")
+library("rmeta")
+library("ggsci")
+
+fastqtl_to_mash_output = "~/pd-omics/katia/Microglia/mic_255s/mashr_sqtl_3rd/fastqtl_to_mash_output/"
+mashr_flashr_workflow_output = "~/pd-omics/katia/Microglia/mic_255s/mashr_sqtl_3rd/mashr_flashr_workflow_output/"
+code_folder = "~/ad-omics_hydra/microglia_omics/mash_sQTL_no2points_id_OLD/code/"
+work_dir = "~/pd-omics/katia/Microglia/mic_255s/mashr_sqtl_3rd/"
+  
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r input_data}
+mash_rds = readRDS(paste0(fastqtl_to_mash_output, "QTLSumStats.mash.rds"))
+#names(mash_rds)
+
+maxb <- mash_rds$strong.b
+maxz <- mash_rds$strong.z
+
+mash_posterior = readRDS(paste0(mashr_flashr_workflow_output, "QTLSumStats.mash.EZ.FL_PC3.V_simple.posterior.rds"))
+# names(mash_posterior)
+# head(mash_posterior$lfsr)
+# dim(mash_posterior$lfsr)
+
+pm.mash <- mash_posterior$PosteriorMean
+lfsr.all <- mash_posterior$lfsr
+standard.error <- maxb/maxz
+pm.mash.beta <- pm.mash*standard.error
+```
+
+## lfsr table at 5%
+lfsr = local false sign rate. Method proposed by Stephens, it is analogous to FDR. 
+
+Number of significative sclusters:
+```{r lfsr.sign}
+pm.mash.beta <- pm.mash.beta[rowSums(lfsr.all<0.05)>0,]
+lfsr.mash <- lfsr.all[rowSums(lfsr.all<0.05)>0,] # lfsr.mash have the significant results. 
+# Means they have lfsr less than 0.05 in at least one condition.
+dim(lfsr.mash)[1] 
+lfsr.mash_symbol = as.data.frame(lfsr.mash)
+rownames(lfsr.mash_symbol) = gsub("_ENS", ":ENS", rownames(lfsr.mash_symbol))
+lfsr.mash_symbol$ensembl = gsub("(.*?):(.*)", "\\2", rownames(lfsr.mash_symbol))
+lfsr.mash_symbol$ensembl = gsub("(.*?)_(.*)", "\\1", lfsr.mash_symbol$ensembl)
+
+## Get conversion table for Gencode 30
+gencode_30 = read.table("~/pd-omics/katia/ens.geneid.gencode.v30", header = T)
+gencode_30$ensembl = gsub("(.*?)\\.(.*)", "\\1", gencode_30$gene_id)
+lfsr.mash_symbol$scluster = rownames(lfsr.mash_symbol)
+lfsr.mash_symbol = merge(lfsr.mash_symbol, gencode_30, by = "ensembl")
+colnames(lfsr.mash_symbol) = gsub("(.*?)_(.*)","\\1",colnames(lfsr.mash_symbol))
+
+lfsr.mash_symbol$gene_id <- NULL 
+lfsr.mash_symbol = lfsr.mash_symbol[,c("ensembl", "GeneSymbol", "scluster", "MFG", "STG", "SVZ", "THA")]
+lfsr.mash_symbol$scluster = gsub("_s", "_rs", lfsr.mash_symbol$scluster)
+
+write.table(lfsr.all, file = paste0(work_dir, "mash_lfsr_sQTL_all.txt"), sep = "\t", quote = F)
+write.table(lfsr.mash_symbol, file = paste0(work_dir, "mash_lfsr_sQTL_5per.txt"), sep = "\t", quote = F)
+
+createDT(lfsr.mash_symbol)
+```
+
+Number of unique gene:
+```{r uniq_gene}
+length(unique(lfsr.mash_symbol$GeneSymbol))
+```
+
+## Pairwise plot
+
+<div style="text-align: justify"> 
+Pairwise sharing by magnitude of sQtLs among tissues. For each pair of tissues, we considered the top sQTLs that were significant (lfsr < 0.05) in at least one of the two tissues, and plotted the proportion of these that are shared in magnitude—that is, have effect estimates that are the same sign and within a factor of 2 in size of one another.
+</div>
+```{r heatmap, fig.height=4, fig.width=4, dpi=300}
+thresh <- 0.05
+
+shared.fold.size <- matrix(NA,nrow = ncol(lfsr.mash),ncol=ncol(lfsr.mash))
+colnames(shared.fold.size) <- rownames(shared.fold.size) <- colnames(maxz)
+for (i in 1:ncol(lfsr.mash))
+  for (j in 1:ncol(lfsr.mash)) {
+    sig.row=which(lfsr.mash[,i]<thresh)
+    sig.col=which(lfsr.mash[,j]<thresh)
+    a=(union(sig.row,sig.col))
+    quotient=(pm.mash.beta[a,i]/pm.mash.beta[a,j])
+    shared.fold.size[i,j] = mean(quotient > 0.5 & quotient < 2)
+  }
+
+# Plot heatmap of sharing by magnitude
+# Generate the heatmap using the “levelplot” function from the lattice package.
+
+clrs <- colorRampPalette(rev(c("#D73027","#FC8D59","#FEE090","#FFFFBF",
+                               "#E0F3F8","#91BFDB","#4575B4")))(64)
+lat <- shared.fold.size
+lat[lower.tri(lat)] <- NA
+n <- nrow(lat)
+
+rownames(lat) <- gsub("(.*?)_(.*)", "\\1", rownames(lat))
+colnames(lat) <- gsub("(.*?)_(.*)", "\\1", colnames(lat))
+
+myPanel <- function(x, y, z, ...) {
+  panel.levelplot(x,y,z,...)
+  panel.text(x, y, ifelse(is.na(round(z,2)),"",round(z,2)))
+}
+
+#pdf(file = "/Users/katia/OneDrive/Documentos/MountSinai/Projects/Microglia/Figures4paper/pairwise_numb_005_sQTL.pdf", width = 5, height = 5)
+print(levelplot( lat[n:1,],col.regions = clrs,xlab = "",ylab = "",colorkey = TRUE, panel=myPanel,
+                 main = "Pairwise sharing by magnitude"))
+#dev.off()
+
+```
+
+## Sharing by sign 
+Compute overall sharing by sign and magnitude 
+```{r overall_shar}
+source(paste0(code_folder, "normfuncs.R"))
+
+# Sharing by sign 
+signall <- mean(het.norm(pm.mash.beta)>0)
+signall #sQTL = 97 % # eQTL = 89 % 
+```
+
+## Sharing by magnitude 
+```{r overall_shar2}
+# Sharing by magnitude 
+magall <- mean(het.norm(pm.mash.beta)>0.5) 
+magall #sQTL = 78%  # eQTL = 53%
+```
+
+```{r}
+sessionInfo()
+```
+

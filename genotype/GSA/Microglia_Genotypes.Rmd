@@ -1,0 +1,1079 @@
+---
+title: "Checking GSA results"
+subtitle: "Genotypes"
+author:  |
+ | Katia de Paiva Lopes 
+ | Ricardo A. Vialle
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+<!-- Justify texts in the page --> 
+<style>
+body {
+text-align: justify}
+</style>
+
+***
+
+```{r setup, message=F, warning=F}
+## Setup, Load Libraries & Report Versions
+knitr::opts_chunk$set(echo = TRUE)
+
+library(pacman)
+p_load(tidyverse,DT,ggsci,ggeasy,UpSetR,gridExtra,scales,ggrepel,scales,factoextra)
+
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+                        extensions = 'Buttons',
+                        class = "display",
+                        callback = JS("return table;"),
+                        filter = c("none", "bottom", "top"), 
+                        escape = TRUE,
+                        style = "default", width = NULL, height = NULL, elementId = NULL,
+                        fillContainer = getOption("DT.fillContainer", NULL),
+                        autoHideNavigation = getOption("DT.autoHideNavigation", NULL),
+                        selection = c("multiple", "single", "none"),
+                        plugins = NULL, editable = FALSE,
+                        options = list( dom = 'Bfrtip', 
+                                        buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                                        scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = T,  
+                                        columnDefs = list(list(className = 'dt-center', targets = "_all"))
+                        )
+  ) 
+  return(data)
+}
+
+work_dir = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/"
+genotype_dir = "~/pd-omics_hydra/glia_omics/genotypes/" 
+metadata_path = "~/pd-omics/katia/Microglia/mic_314s/metadata_files/"
+anc_dir = "~/ad-omics/ricardo/gsa/"
+write_dir = anc_dir
+
+work_dir = "D:/OneDrive/Área de Trabalho/Work/gsa/"
+genotype_dir = paste0(work_dir,"genotypes/")
+metadata_path = paste0(work_dir,"metadata_files/")
+mbv_dir = paste0(work_dir,"mbv/")
+anc_dir = work_dir
+write_dir = anc_dir
+expression_dir = paste0(work_dir,"expression_tables_added_pilot_314s/")
+```
+
+# GSA fam file
+
+This file contains all samples processed by Michael Chao, not only the ones from this project.
+
+First columns is the GSA id. Second column is our ID.
+
+QCed column show samples kept in the file **gsa123456_geno95_hwe6_mind95_het3sd**
+
+```{r}
+### READ METADATA
+# All RNA-seq samples (314)
+metadata = read.table(paste0(metadata_path,"metadata_314s_28feb2020.txt"), header = T, check.names = F, sep="\t", stringsAsFactors = F)
+# Only RNA-seq samples that pass QC (285)
+metadata.filt = read.table(paste0(metadata_path,"metadata_285filt_eng_3mar2020.txt"), header = T, check.names = F, sep="\t", stringsAsFactors = F)
+# Just checking if donor IDs can be inferred from sample IDs
+#length(unique(gsub("(.*)-(.*)","\\1",metadata$Donor_tissue))) # 115 donors from RNAseq (preQC)
+#all(gsub("(.*)-(.*)","\\1",metadata$Donor_tissue) == metadata$Donor_id) # All donor IDs can be inferred from Sample IDs
+#length(unique(gsub("(.*)-(.*)","\\1",metadata.filt$donor_tissue))) # 111 donor from RNAseq (afterQC)
+#all(gsub("(.*)-(.*)","\\1",metadata.filt$donor_tissue) == metadata.filt$donor_id) # Again, all donor IDs can be inferred from Sample IDs
+
+failed_samples_df = data.frame(donor_tissue = metadata$Donor_tissue, status = "Ok", cause = "", stringsAsFactors = F)
+register_failed_samples <- function(failed_samples_df, donor_tissue, cause){
+  failed_samples_df[failed_samples_df$donor_tissue %in% donor_tissue, "status"] <- "Failed"
+  failed_samples_df[failed_samples_df$donor_tissue %in% donor_tissue, "cause"] <- ifelse(failed_samples_df[failed_samples_df$donor_tissue %in% donor_tissue, "cause"]=="", 
+                                                                                         cause, paste0(failed_samples_df[failed_samples_df$donor_tissue %in% donor_tissue, "cause"],";",cause))
+  return(failed_samples_df)
+}
+failed_samples_df = register_failed_samples(failed_samples_df, metadata[!metadata$Donor_tissue %in% metadata.filt$donor_tissue,"Donor_tissue"],"RNAseq_QC")
+
+### READ GENOTYPE FAM FILES
+genotype.fam = read.table(paste0(genotype_dir,"gsa123456.fam"), header = F, stringsAsFactors = F)
+genotype.fam$Donor_id = gsub("_","-",gsub("(.*)_GFM","\\1",gsub("(.*)_CER","\\1",genotype.fam$V2))) # Remove chars after underline to match samples names in the RNAseq tables
+genotype.fam.QCed = read.table(paste0(genotype_dir,"gsa123456_geno95_hwe6_mind95_het3sd.fam"), header = F, stringsAsFactors = F)
+genotype.fam.QCed$Donor_id = gsub("_","-",gsub("(.*)_GFM","\\1",gsub("(.*)_CER","\\1",genotype.fam.QCed$V2))) # Remove chars after underline to match samples names in the RNAseq tables
+### READ HET QC 
+genotype.hetQC = read.table(paste0(work_dir,"fail-het-qc.txt"), header = T, stringsAsFactors = F, check.names = F)
+genotype.missingQC = read.table(paste0(work_dir,"plink.imiss"), header = T, stringsAsFactors = F, check.names = F)
+
+# length(unique(metadata$Donor_id)) # 115 donors
+# sum(unique(metadata$Donor_id) %in% genotype.fam$Donor_id) # 109 of them have genotypes (pre GSA QC)
+# sum(unique(metadata$Donor_id) %in% genotype.fam.QCed$Donor_id) # 105 of them have genotypes (after GSA QC)
+
+# length(unique(metadata.filt$donor_id)) # 111 donors after RNAseq QC
+# sum(unique(metadata.filt$donor_id) %in% genotype.fam$Donor_id) # 105 of them have genotypes (pre GSA QC)
+# sum(unique(metadata.filt$donor_id) %in% genotype.fam.QCed$Donor_id) # 101 of them have genotypes (after GSA QC)
+
+genotype.fam.merged = merge(genotype.fam,genotype.fam.QCed, by = c("V1","V2"), all.x = T) %>% dplyr::rename(V3 = V3.x, V4 = V4.x, V5 = V5.x, V6 = V6.x, Donor_id = Donor_id.x) %>% mutate(QCed = !is.na(V3.y)) %>% dplyr::select(V1,V2,V3,V4,V5,V6,QCed,Donor_id)
+createDT(genotype.fam.merged)
+```
+
+# From RNA-seq 
+
+Comparing donor and samples overlapping the GSA files. Showing before and after RNAseq QC
+
+```{r}
+data.frame(Status=c("preQC","afterQC"),
+           `Donors (n)`=c(length(unique(metadata$Donor_id)), length(unique(metadata.filt$donor_id))),
+           `Samples (n)`=c(length(unique(metadata$Donor_tissue)), length(unique(metadata.filt$donor_tissue))),
+           check.names = F)
+```
+
+# From GSA 
+
+Same thing, but now showing before and after GSA QC
+
+```{r}
+data.frame(Status=c("preQC","afterQC"),
+           `Total donors (n)`=c(nrow(genotype.fam),nrow(genotype.fam.QCed)),
+           `Unique donors (n)`=c(length(unique(genotype.fam$V2)), length(unique(genotype.fam.QCed$V2))),
+           `Matching preQC RNAseq samples (n)`= c(sum(unique(metadata$Donor_id) %in% unique(genotype.fam$Donor_id)), sum(unique(metadata$Donor_id) %in% unique(genotype.fam.QCed$Donor_id))),
+           `Matching afterQC RNAseq samples (n)`= c(sum(unique(metadata.filt$donor_id) %in% unique(genotype.fam$Donor_id)), sum(unique(metadata.filt$donor_id) %in% unique(genotype.fam.QCed$Donor_id))),
+           check.names = F)
+```
+
+Duplicated IDs? Showing only for IDs matching RNAseq samples
+
+```{r}
+#genotype.fam.merged$Donor_id = gsub("(.*)_(.*)","\\1",genotype.fam.merged$V2)
+isdup <- function (x) duplicated (x) | duplicated (x, fromLast = TRUE)
+genotype.fam.merged %>% filter(genotype.fam.merged$Donor_id %in% unique(metadata$Donor_id)) %>% filter(isdup(Donor_id))
+```
+
+# Plot showing overlaps between GSA and RNAseq
+
+```{r warning=FALSE, message=FALSE, results='hide', fig.keep='last', dpi=300, fig.width=7, fig.height=3}
+listInput = list(RNAseq_preQC = unique(metadata$Donor_id), 
+                 RNAseq_postQC = unique(metadata.filt$donor_id),
+                 GSA_preQC = unique(genotype.fam$Donor_id),
+                 GSA_postQC = unique(genotype.fam.QCed$Donor_id))
+upset(fromList(listInput), order.by = "freq")
+```
+
+# Missing samples
+
+Samples with RNAseq that were not genotyped
+
+```{r}
+metadata.missing = metadata %>% filter(!Donor_id %in% unique(genotype.fam$Donor_id)) %>% dplyr::select(Donor_tissue,Donor_id) %>% distinct()
+metadata.missing$PassQC = metadata.missing$Donor_tissue %in% metadata.filt$donor_tissue
+
+failed_samples_df = register_failed_samples(failed_samples_df, metadata.missing$Donor_tissue, "Not_genotyped")
+
+createDT(metadata.missing)
+```
+
+# Samples removed in GSA QC 
+
+MG samples that were genotyped but didn't pass the GSA QC steps were because of individual missing rate (>0.15)
+
+```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=6, fig.height=3}
+donors_preQC_GSA = unique(metadata$Donor_id)[unique(metadata$Donor_id) %in% genotype.fam$Donor_id] 
+donors_afterQC_GSA = unique(metadata$Donor_id)[unique(metadata$Donor_id) %in% genotype.fam.QCed$Donor_id]
+donors_removed_in_GSA_QC = donors_preQC_GSA[!donors_preQC_GSA %in% donors_afterQC_GSA]
+
+failed_samples_df = register_failed_samples(failed_samples_df, metadata[metadata$Donor_id%in%donors_removed_in_GSA_QC,"Donor_tissue"], "Removed_in_GSA_QC_highMissingness")
+
+genotype.indmiss = genotype.missingQC[genotype.missingQC$FID %in% genotype.fam[genotype.fam$Donor_id%in%metadata$Donor_id,"V1"], ]
+
+genotype.indmiss$Miss_thresh = genotype.indmiss$F_MISS>0.15
+ggplot(genotype.indmiss, aes(x=F_MISS)) +
+  geom_histogram(aes(fill=Miss_thresh), bins = 100, colour="black") +
+  scale_fill_manual(values = c("grey","#CB454A")) +
+  geom_vline(xintercept=0.15, color="grey") + 
+  labs(y = "Number of individuals", x = "Variant missingness per individual") +
+  theme_classic() +
+  easy_remove_legend()
+```
+
+List of samples removed due to missingness in the genotyping step
+
+```{r}
+createDT(metadata[metadata$Donor_id %in% donors_removed_in_GSA_QC,c("Donor_tissue","Donor_id")])
+```
+
+# Usable samples
+
+After GSA QC **AND** RNAseq QC **(101 donors and 262 samples)**
+
+```{r}
+metadata_usable = metadata.filt[metadata.filt$donor_id %in% unique(genotype.fam.QCed$Donor_id),]
+createDT(metadata_usable)
+```
+
+# Checking ancestry numbers
+
+Ancestry defined with differenct thresholds per population (Michael Chao analysis)
+
+**UNKNOWN** are samples not present in any of the ancestry files (probably didnt pass SD thresdhold)
+
+```{r}
+aj_samples = read.table(paste0(anc_dir,"gsa123456_aj_samples_10MDS_mean3sd.txt"), header = T, stringsAsFactors = F)
+afr_samples = read.table(paste0(anc_dir,"gsa_afr_samples_10MDS_4SD.txt"), header = F, stringsAsFactors = F)
+amr_samples = read.table(paste0(anc_dir,"gsa_amr_samples_10MDS_6SD.txt"), header = F, stringsAsFactors = F)
+eas_samples = read.table(paste0(anc_dir,"gsa_eas_samples_10MDS_3SD.txt"), header = F, stringsAsFactors = F)
+eur_samples = read.table(paste0(anc_dir,"gsa_eur_samples_10MDS_6SD.txt"), header = F, stringsAsFactors = F)
+sas_samples = read.table(paste0(anc_dir,"gsa_sas_samples_10MDS_6SD.txt"), header = F, stringsAsFactors = F)
+
+anc_samples = rbind(as.data.frame(cbind(aj_samples$IID,"AJ")), 
+                    cbind(afr_samples,V2 ="AFR"),
+                    cbind(amr_samples,V2 ="AMR"),
+                    cbind(eas_samples,V2 ="EAS"),
+                    cbind(eur_samples,V2 ="EUR"),
+                    cbind(sas_samples,V2 ="SAS"))
+
+genotype.fam.merged$merged_id = paste(genotype.fam.merged$V1,genotype.fam.merged$V2, sep = "_")
+
+genotype.fam.merged.usable = genotype.fam.merged[genotype.fam.merged$Donor_id %in% unique(metadata_usable$donor_id),]
+genotype.fam.merged.usable.afr = genotype.fam.merged.usable[genotype.fam.merged.usable$merged_id %in% afr_samples$V1,]
+genotype.fam.merged.usable.amr = genotype.fam.merged.usable[genotype.fam.merged.usable$merged_id %in% amr_samples$V1,]
+genotype.fam.merged.usable.eas = genotype.fam.merged.usable[genotype.fam.merged.usable$merged_id %in% eas_samples$V1,]
+genotype.fam.merged.usable.eur = genotype.fam.merged.usable[genotype.fam.merged.usable$merged_id %in% eur_samples$V1,]
+genotype.fam.merged.usable.sas = genotype.fam.merged.usable[genotype.fam.merged.usable$merged_id %in% sas_samples$V1,]
+genotype.fam.merged.usable.aj = genotype.fam.merged.usable[genotype.fam.merged.usable$merged_id %in% aj_samples$IID,]
+#genotype.fam.merged.usable.eur[!genotype.fam.merged.usable.eur$merged_id %in% genotype.fam.merged.usable.aj$merged_id,]
+genotype.fam.merged.usable.unknown = genotype.fam.merged.usable[!genotype.fam.merged.usable$merged_id %in% anc_samples$V1,]
+
+data.frame(`Ancestry` = c("AFR","AMR","EAS","EUR","SAS","AJ (already included in EUR)","UNKNOWN"), 
+           `Samples` = c(length(unique(genotype.fam.merged.usable.afr$Donor_id)),
+                         length(unique(genotype.fam.merged.usable.amr$Donor_id)),
+                         length(unique(genotype.fam.merged.usable.eas$Donor_id)),
+                         length(unique(genotype.fam.merged.usable.eur$Donor_id)),
+                         length(unique(genotype.fam.merged.usable.sas$Donor_id)),
+                         length(unique(genotype.fam.merged.usable.aj$Donor_id)),
+                         length(unique(genotype.fam.merged.usable.unknown)$Donor_id)), 
+           `Duplicated` = c(sum(duplicated(genotype.fam.merged.usable.afr$Donor_id)),
+                            sum(duplicated(genotype.fam.merged.usable.amr$Donor_id)),
+                            sum(duplicated(genotype.fam.merged.usable.eas$Donor_id)),
+                            sum(duplicated(genotype.fam.merged.usable.eur$Donor_id)),
+                            sum(duplicated(genotype.fam.merged.usable.sas$Donor_id)),
+                            sum(duplicated(genotype.fam.merged.usable.aj$Donor_id)),
+                            sum(duplicated(genotype.fam.merged.usable.unknown$Donor_id))))
+```
+
+```{r}
+# Load MDS files
+mds_all = read.delim2(paste0(work_dir,"gsa123456_1000g_10mds.txt"), stringsAsFactors = F)
+mds.usable = mds_all[mds_all$IID %in% genotype.fam.merged.usable$merged_id,]
+mds.usable
+```
+
+```{r message=F, warning=F, results='hide', fig.keep='last', dpi=600, fig.width=6, fig.height=6}
+mds_all$MajorPop = gsub("(.*)-(.*)","\\1",mds_all$Population)
+ancestry_pcs_cohort = mds_all[mds_all$MajorPop %in% c("AFR","AMR","EAS","EUR","SAS") | mds_all$IID %in% mds.usable$IID,]
+ancestry_pcs_cohort$MajorPop[ancestry_pcs_cohort$MajorPop=="GSA"] = "MG cohort"
+ancestry_pcs_cohort$cohort = ancestry_pcs_cohort$MajorPop=="MG cohort"
+ancestry_pcs_cohort$MajorPop = factor(ancestry_pcs_cohort$MajorPop, 
+                                      levels = c("AFR","AMR","EAS","EUR","SAS","MG cohort"))
+  ancestry_pcs_colors = c("#941594","#E18727FF","#108C43","#69A5CC","#ABB9B9","#CB454A")
+
+ancestry_pcs_cohort$C1 = as.numeric(as.character(ancestry_pcs_cohort$C1))
+ancestry_pcs_cohort$C2 = as.numeric(as.character(ancestry_pcs_cohort$C2))
+ggplot(ancestry_pcs_cohort, 
+         aes(x=C1, y=C2, fill=MajorPop)) +
+    geom_point(aes(shape=cohort,alpha=cohort,color=cohort), size=2.5) +
+    scale_color_manual(values = c("white","black"), guide = FALSE) +
+    scale_shape_manual(values = c(22,22), guide = FALSE) +
+    scale_alpha_manual(values = c(0.2,0.8), guide = FALSE) +
+    scale_fill_manual(values = ancestry_pcs_colors, 
+                      guide = guide_legend(fill = ancestry_pcs_colors, colour = "black")) +
+    scale_x_continuous(breaks = pretty_breaks(n = 10)) +
+    scale_y_continuous(breaks = pretty_breaks(n = 10)) +
+    coord_fixed() +
+    labs(x = "Ancestry PC1", y = "Ancestry PC2", fill = "Population") +
+    guides(fill = guide_legend(nrow = 1, override.aes = list(shape = 22, colour = "black"))) +
+    theme_classic() +
+    theme(legend.position="top", legend.box = "horizontal") 
+```
+
+# Sex check
+
+Comparing reported sex information with inferred sex from genotypes
+
+```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=10, fig.height=4}
+sex_check = read.table(paste0(anc_dir,"plink.sexcheck"), header = T, stringsAsFactors = F)
+sex_check.usable = sex_check[sex_check$FID %in% unique(genotype.fam.merged.usable$V1),]
+sex_check.usable$donor_id  = gsub("_","-",gsub("(.*)_GFM","\\1",gsub("(.*)_CER","\\1",sex_check.usable$IID)))
+sex_check.usable = sex_check.usable[sex_check.usable$donor_id %in% metadata.filt$donor_id,]
+
+# 1 is M
+# 2 if F
+# Compare with our metadata
+sex_check.usable = sex_check.usable %>% left_join(unique(metadata[,c("Donor_id","sex")]), by = c("donor_id" = "Donor_id"))
+sex_check.usable$sex2 = sex_check.usable$sex 
+sex_check.usable$sex2[sex_check.usable$sex2=="m"] = 1
+sex_check.usable$sex2[sex_check.usable$sex2=="f"] = 2
+sex_check.usable$STATUS2 = sex_check.usable$SNPSEX == sex_check.usable$sex2
+sex_check.usable$STATUS2[sex_check.usable$STATUS2==T] = "OK"
+sex_check.usable$STATUS2[sex_check.usable$STATUS2==F] = "PROBLEM"
+
+#table(metadata_usable %>% distinct(donor_id,sex) %>% dplyr::select(sex),useNA="ifany")
+#table(sex_check.usable$SNPSEX2,useNA="ifany")
+
+a = ggplot(sex_check.usable, aes(x = STATUS2, fill=STATUS2)) + 
+  geom_bar(color="black") + 
+  geom_text(stat='count', aes(label=..count..),vjust=-0.35) + 
+  theme_classic() +
+  labs(y = "Count", x = "Sex Check Status") +
+  scale_fill_aaas() + 
+  easy_remove_legend()
+
+sex_check.usable$SNPSEX2 = sex_check.usable$SNPSEX
+sex_check.usable$SNPSEX2[sex_check.usable$SNPSEX2 == 1] = "Male" 
+sex_check.usable$SNPSEX2[sex_check.usable$SNPSEX2 == 2] = "Female" 
+sex_check.usable$SNPSEX2[sex_check.usable$SNPSEX2 == 0] = "Other" 
+b = ggplot(sex_check.usable, aes(x = SNPSEX2, fill=STATUS2)) +
+  geom_bar(position="dodge", color="black") +
+  geom_text(aes(label=..count..), stat='count', position=position_dodge(0.9), vjust=-0.35) +
+  labs(y = "Count", x = "SNP Sex Inferred", fill = "Sex Check Status") +
+  scale_fill_aaas() + 
+  theme_classic()
+grid.arrange(a, b, nrow = 1)
+```
+
+Showing the samples with sex missmatches. **8 donors** 
+
+```{r}
+sex_check.usable.problem = sex_check.usable[sex_check.usable$STATUS2=="PROBLEM",]
+
+#sex_check.usable.problem$donor_id = gsub("(.*)_(.*)","\\1",sex_check.usable.problem$IID)
+sex_check.usable.problem2 = sex_check.usable.problem %>% 
+  dplyr::select(gsa_id = FID,gsa_id2 = IID,donor_id,reported_sex = sex,inferred_sex = SNPSEX2,status = STATUS2,`F`)
+
+failed_samples_df = register_failed_samples(failed_samples_df, metadata[metadata$Donor_id %in% sex_check.usable.problem2$donor_id, "Donor_tissue"], "SexMismatch")
+
+createDT(sex_check.usable.problem2)
+```
+
+Checking in the RNA data 
+
+```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=6, fig.height=3}
+load(paste0(expression_dir, "Expression_filt_285s.Rdata"))
+
+# TPM
+#dim(genes_tpm_exp) # 19376 genes and 285 samples
+xist = genes_tpm_exp[which(grepl("ENSG00000229807",rownames(genes_tpm_exp))),]
+uty = genes_tpm_exp[which(grepl("ENSG00000183878",rownames(genes_tpm_exp))),]
+rna_sex_genes_tpm = data.frame(XIST = t(xist), UTY = t(uty))
+colnames(rna_sex_genes_tpm) = c("XIST","UTY")
+
+# Merge with metadata 
+#all(metadata.filt$donor_tissue==rownames(rna_sex_genes_tpm)) # TRUE
+rna_sex_genes_tpm$`Reported Sex` = metadata.filt$sex
+
+#ggplot(rna_sex_genes_tpm, aes(x=XIST, y=UTY, fill=`Reported Sex`)) +
+#  geom_point(shape=21)
+
+# VOOM
+genes_counts_voom = as.data.frame(genes_counts_voom, stringsAsFactors = F)
+xist = genes_counts_voom[which(grepl("ENSG00000229807",rownames(genes_counts_voom))),]
+uty = genes_counts_voom[which(grepl("ENSG00000183878",rownames(genes_counts_voom))),]
+rna_sex_genes_voom = data.frame(XIST = t(xist), UTY = t(uty))
+colnames(rna_sex_genes_voom) = c("XIST","UTY")
+
+# Merge with metadata 
+#all(metadata.filt$donor_tissue==rownames(rna_sex_genes_voom)) # TRUE
+rna_sex_genes_voom$`Reported Sex` = factor(toupper(metadata.filt$sex), levels = c("M","F"))
+rna_sex_genes_voom$donor_id = metadata.filt$donor_id
+rna_sex_genes_voom$donor_tissue = metadata.filt$donor_tissue
+rna_sex_genes_voom = rna_sex_genes_voom %>% plyr::join(sex_check.usable[,c("donor_id","STATUS")], by = "donor_id")
+avg_xist = mean(rna_sex_genes_voom$XIST[rna_sex_genes_voom$`Reported Sex`=="F"])
+avg_uty = mean(rna_sex_genes_voom$UTY[rna_sex_genes_voom$`Reported Sex`=="M"])
+rna_sex_genes_voom$toCheck = F
+
+rna_sex_genes_voom$toCheck =  (rna_sex_genes_voom$UTY>0 & rna_sex_genes_voom$`Reported Sex`=="F") | 
+  (rna_sex_genes_voom$XIST<2 & rna_sex_genes_voom$`Reported Sex`=="F") |
+  (rna_sex_genes_voom$XIST>4.5 & rna_sex_genes_voom$`Reported Sex`=="M")
+
+ggplot(rna_sex_genes_voom, aes(x=XIST, y=UTY, fill=`Reported Sex`)) +
+  geom_point(shape=21, size=2, alpha=.8) +
+  geom_label_repel(data = subset(rna_sex_genes_voom, toCheck == T),
+                   aes(label = donor_tissue),
+                   fill = "grey90",
+                   size=3,
+                   segment.alpha = 0.5,
+                   label.size = NA, 
+                   alpha = 0.8, 
+                   label.padding=.1, 
+                   box.padding = .1,
+                   na.rm=TRUE,
+                   seed = 1234) +
+  scale_fill_aaas() +
+  labs(x = "XIST (Voom)", y = "UTY (Voom)", fill = "Reported Sex") +
+  theme_classic()
+```
+
+# Relatedness
+
+Besides the two duplicated samples in the GSA run, there are two more samples with 2nd-degree relatedness
+
+```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=6, fig.height=3}
+pi_hat = read.table(paste0(anc_dir,"pihat_min0.2.genome"), header = T, stringsAsFactors = F) # Related samples to remove
+# ggplot(pi_hat, aes(x=PI_HAT)) +
+#   geom_histogram(bins = 20, colour="black", fill="white") +
+#   theme_classic()
+pi_hat.to_remove = pi_hat[pi_hat$FID1 %in% genotype.fam.merged.usable$V1 & pi_hat$FID2 %in% genotype.fam.merged.usable$V1,]
+
+king.to_remove = read.table(paste0(anc_dir,"kingunrelated_toberemoved.txt"), header = F, stringsAsFactors = F)
+king.to_remove.filt = king.to_remove[king.to_remove$V1 %in% genotype.fam.merged.usable$V1, ]
+
+#king -b ~/pd-omics_hydra/glia_omics/genotypes/gsa123456_geno95_hwe6_mind95_het3sd.bed --kinship --unrelated --related --duplicate
+# an estimated kinship coefficient range >0.354, [0.177, 0.354], [0.0884, 0.177] and [0.0442, 0.0884] corresponds to duplicate/MZ twin, 1st-degree, 2nd-degree, and 3rd-degree relationships respectively
+king = read.table(gzfile(paste0(anc_dir,"king.kin0.gz")), header = T, stringsAsFactors = F)
+king.usable = king[king$FID1 %in% genotype.fam.merged.usable$V1 & king$FID2 %in% genotype.fam.merged.usable$V1,]
+king.usable.toRemove = king.usable[king.usable$Kinship>0.0884,]
+d = data.frame(label = c("duplicate/MZ twin","1st-degree","2nd-degree","3rd-degree"),
+               value = c(0.354,0.177,0.0884,0.0442))
+king.usable$Class = factor(ifelse(king.usable$Kinship>0.0884,"toRemove","toKeep"), levels = c("toRemove","toKeep"))
+ggplot(king.usable, aes(x=Kinship)) +
+  geom_histogram(aes(fill=Class), bins = 100, colour="black") +
+  scale_fill_manual(values = c("#CB454A","grey")) +
+  geom_vline(data=d, mapping=aes(xintercept=value), color="grey") + 
+  geom_text(data=d, mapping=aes(x=value, y=1800, label=label), size=3, angle=-90, vjust=-0.4, hjust=0) +
+  scale_y_sqrt(breaks = c(0,10,100,250,500,1000,1500)) +
+  labs(y = "Counts (square root scale)") +
+  #annotation_logticks(sides = "l",) +
+  theme_classic() +
+  easy_remove_legend()
+```
+
+Showing the duplicated and related samples identified by Kinship analysis
+
+```{r}
+king.usable.toRemove
+```
+
+# Merging data
+
+* Prioritizing EUR ancestry donor
+* Donors 18-112 and 15-041 are 2nd degree related. Keeping the donor 18-112 (3 brain regions) and removing donor 15-041 (1 brain region)
+* For the duplicated GSA runs, we will keep those from GSA6
+
+Numbers:
+
+|         | Donors | Samples |
+|---      |---     |---      |
+|All      | 100    | 261     |
+|EUR-only | 92     | 239     |
+
+Showing below metadata for all ancestries
+
+```{r}
+# Remove related individual
+metadata_final = metadata_usable[!metadata_usable$donor_id=="15-041",]
+# Add sexCheck information
+metadata_final$sex_check_FAIL = metadata_final$donor_id %in% sex_check.usable.problem$donor_id
+# Select european ancestry individuals
+metadata_final.eur = metadata_final[metadata_final$donor_id %in% genotype.fam.merged.usable.eur$Donor_id,]
+# Filter duplicated and related donor from GSA fam table
+genotype.fam.merged.usable.final = genotype.fam.merged.usable[!genotype.fam.merged.usable$V1 %in% c("GSA5_109","GSA5_121","GSA5_124","GSA5_171","GSA6_179"),]
+rownames(genotype.fam.merged.usable.final) = genotype.fam.merged.usable.final$Donor_id
+# Select european ancestry individuals
+genotype.fam.merged.usable.final.eur = genotype.fam.merged.usable.final[genotype.fam.merged.usable.final$Donor_id %in% genotype.fam.merged.usable.eur$Donor_id,]
+
+metadata_final$gsa_id = genotype.fam.merged.usable.final[metadata_final$donor_id,"V1"]
+metadata_final$merged_gsa_id = genotype.fam.merged.usable.final[metadata_final$donor_id,"merged_id"]
+# merged_gsa_id2 have the original GSA id (some samples have donor_ids with _ instead of -)
+metadata_final$merged_gsa_id2 = paste0(genotype.fam.merged.usable.final[metadata_final$donor_id,"V1"],"_",genotype.fam.merged.usable.final[metadata_final$donor_id,"V2"])
+
+metadata_final.eur$gsa_id = genotype.fam.merged.usable.final.eur[metadata_final.eur$donor_id,"V1"]
+metadata_final.eur$merged_gsa_id = genotype.fam.merged.usable.final.eur[metadata_final.eur$donor_id,"merged_id"]
+metadata_final.eur$merged_gsa_id2 = paste0(genotype.fam.merged.usable.final.eur[metadata_final.eur$donor_id,"V1"],"_",genotype.fam.merged.usable.final.eur[metadata_final.eur$donor_id,"V2"])
+
+#write.table(metadata_final, file = paste0(write_dir,"metadata4eQTL_final.txt"), quote = F, row.names = F)
+#write.table(metadata_final.eur, file = paste0(write_dir,"metadata4eQTL_final.eur.txt"), quote = F, row.names = F)
+#write.table(metadata_final.eur$gsa_id, file = paste0(write_dir,"gsa_ids_4eQTL_final.eur.txt"), quote = F, row.names = F)
+
+#write.table(genotype.fam.merged.usable[,c("V1","V2")], file = paste0(write_dir,"gsa_ids_4eQTL_prefilt.txt"), quote = F, row.names = F)
+
+createDT(metadata_final)
+```
+
+<!-- # Missingness -->
+
+<!-- First checking for missingness and sample swap -->
+
+<!-- ```{bash eval=F} -->
+<!-- ml plink -->
+<!-- # Filter plink file to keep only filtered samples (100 donors) -->
+<!-- plink --bfile /hpc/users/viallr01/pd-omics_hydra/glia_omics/genotypes/gsa123456_geno95_hwe6_mind95_het3sd --keep gsa_ids_4eQTL_prefilt.txt --make-bed --out gsa_ids_4eQTL_prefilt -->
+<!-- # Calculate sample and variant missingness in the filtered plink -->
+<!-- plink --bfile gsa_ids_4eQTL_prefilt --missing -->
+<!-- ``` -->
+
+<!-- ## Individual missingness -->
+
+<!-- All samples **PASS** < 0.05 missingness threshold  -->
+
+<!-- ```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=6, fig.height=3} -->
+<!-- indmiss<-read.table(file=paste0(write_dir,"plink.imiss"), header=TRUE) -->
+<!-- snpmiss<-read.table(file=paste0(write_dir,"plink.lmiss"), header=TRUE) -->
+
+<!-- indmiss$Miss_thresh = indmiss$F_MISS>0.05 -->
+<!-- ggplot(indmiss, aes(x=F_MISS)) + -->
+<!--   geom_histogram(aes(fill=Miss_thresh), bins = 100, colour="black") + -->
+<!--   scale_fill_manual(values = c("#CB454A","grey")) + -->
+<!--   geom_vline(xintercept=0.05, color="grey") +  -->
+<!--   labs(y = "Number of individuals", x = "Variant missingness per individual") + -->
+<!--   theme_classic() + -->
+<!--   easy_remove_legend() -->
+<!-- ``` -->
+
+<!-- ## Variant missingness -->
+
+<!-- A total of **1317** variants from a total 593748 did **NOT pass** < 0.05 missingness threshold  -->
+
+<!-- ```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=6, fig.height=3} -->
+<!-- snpmiss$Miss_thresh = snpmiss$F_MISS>0.05 -->
+<!-- #sum(snpmiss$Miss_thresh) # 1317 -->
+<!-- ggplot(snpmiss, aes(x=F_MISS)) + -->
+<!--   geom_histogram(aes(fill=Miss_thresh), bins = 20, colour="black") + -->
+<!--   scale_fill_manual(values = c("#CB454A","grey")) + -->
+<!--   geom_vline(xintercept=0.05, color="grey") +  -->
+<!--   #scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) + -->
+<!--   #annotation_logticks(sides = "l") + -->
+<!--   #labs(y = expression(log[10](`number of variants`)), x = "Sample missingness") + -->
+<!--   labs(y = "Number of variants", x = "Sample missingness") + -->
+<!--   theme_classic() + -->
+<!--   easy_remove_legend() -->
+<!-- ``` -->
+
+# Checking DNA-RNA concordance
+
+```{bash eval=F, echo=F}
+"plink --bfile gsa_ids_4eQTL_prefilt --geno 0.05 --make-bed --out gsa_ids_4eQTL_prefilt_1"
+"plink --bfile gsa_ids_4eQTL_prefilt_1 --mind 0.05 --make-bed --out gsa_ids_4eQTL_prefilt_2"
+"plink --bfile gsa_ids_4eQTL_prefilt_2 --maf 0.05 --hwe 1e-6 --make-bed --out gsa_ids_4eQTL_prefilt_3"
+"plink --bfile gsa_ids_4eQTL_prefilt_3 --recode12"
+"liftOverPlink.py --map plink.map --out lifted --chain b37ToHg38.over.chain.gz"
+"rmBadLifts.py --map lifted.map --out good_lifted.map --log bad_lifted.dat"
+"cut -f 2 bad_lifted.dat > to_exclude.dat"
+'cut -f 4 lifted.bed.unlifted | sed "/^#/d" >> to_exclude.dat'
+"# Note: this will clobber the lifted MAP file generated by `liftOverPlink`:"
+"plink --file plink --recode --out lifted --exclude bad_lifted.dat"
+"plink --ped lifted.ped --map lifted.map --recode --out final"
+"plink --file final --recode vcf --out gsa_ids_4eQTL_geno95_hwe6_mind95_lift38"
+
+## Commands to prepare VCF for QTLtools mbv
+####
+ml plink
+plink --bfile /hpc/users/viallr01/pd-omics_hydra/glia_omics/genotypes/gsa123456_geno95_hwe6_mind95_het3sd --recode vcf --out gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd --output-chr chrM
+
+ml crossmap/0.3.2; ml bcftools/1.9;
+CrossMap.py vcf hg19ToHg38.over.chain.gz gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd.vcf ~/ad-omics/data/references/hg38_reference/hg38.fa gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38.vcf
+
+# Copy filtered and lifted vcf from GSA
+cp /hpc/users/viallr01/ad-omics/ricardo/gsa/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38.vcf /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38.vcf
+
+# Remove variants with ambiguous calls in the REF or ALT fields 
+awk '$1 ~ /^#/ {print $0;next} {if ($4 ~ /A|C|T|G|N/ && $5 ~ /A|C|T|G|N/) print $0}' /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38.vcf > /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38_1.vcf
+
+# Sort variants, compress and index
+bcftools sort /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38_1.vcf -Oz -o /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38_2.vcf.gz
+tabix -p vcf /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38_2.vcf.gz
+
+# Check for some problems
+bcftools +fixref /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38_2.vcf.gz -- --fasta-ref ~/ad-omics/data/references/hg38_reference/hg38.fa
+
+# Remove problematic alleles
+bcftools norm -c we -f ~/ad-omics/data/references/hg38_reference/hg38.fa /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38_2.vcf.gz -Oz -o /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38_3.vcf.gz
+tabix -p vcf /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38_3.vcf.gz
+
+# Select first chromosomes to test with mbv
+bcftools view -r chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21 -Oz -o /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38.vcf.gz  /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38_3.vcf.gz
+tabix -p vcf /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/match_bam_to_genotypes/gsa_ids_4eQTL_geno95_hwe6_mind95_het3sd_hg38.vcf.gz
+```
+
+We will check for concordance between RNA (using .bam files) and DNA data (using GSA genotypes from .vcf file).
+
+First, we will show if there is matches for 13 samples that were **not** genotyped.
+
+```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=6, fig.height=3}
+#mbv_test <- read.table(file = paste0(mbv_dir,"/results/glia_omics_mbv/output/16-116-GTS.bamstat.txt"), header = T, check.names = F)
+#ggplot(unique(mbv_test), aes(x = perc_het_consistent, y = perc_hom_consistent)) +
+#  geom_point( shape=21, alpha=0.4, size=2, fill="grey" ) +
+#  labs(y = "Concordance at HOM (%)", x = "Concordance at HET (%)") +
+#  theme_classic()
+mbv <- read.table(file = paste0(mbv_dir,"/results/glia_omics_mbv/glia_omics_mbv_mbv_summary.txt"), 
+                  header = F, 
+                  check.names = F,
+                  col.names = c("bam","SampleID","n_geno_missing","n_het_total","n_hom_total","n_het_covered","n_hom_covered","n_het_consistent","n_hom_consistent","perc_het_consistent","perc_hom_consistent","n_het_in_ase"))
+mbv$bam_donor_id = gsub("(.*)\\/(.*)-(.*)","\\2",mbv$bam)
+mbv$bam_sample_id = gsub("(.*)\\/(.*)\\.bamstat\\.txt","\\2",mbv$bam)
+mbv$sample_donor_id = gsub("_","-",gsub("_CER|_GFM","",gsub("(.*?)_(.*?)_(.*)","\\3",mbv$SampleID)))
+mbv$sample_id = gsub("(.*?)_(.*?)_(.*)","\\3",mbv$SampleID)
+mbv$same_donor = mbv$bam_donor_id==mbv$sample_donor_id
+
+failed_samples_df = register_failed_samples(failed_samples_df, mbv[mbv$same_donor==F,"bam_sample_id"], "MBV")
+
+mbv.missing = mbv[mbv$bam_sample_id %in% metadata.missing$Donor_tissue,]
+ggplot(mbv.missing, aes(x = perc_het_consistent, y = perc_hom_consistent, fill = same_donor)) +
+  geom_vline(xintercept=0.5, color="grey", linetype = "dashed") + 
+  geom_point(shape=21, alpha=0.4, size=2) +
+  geom_point(data = subset(mbv.missing, same_donor == F), alpha = 0.8, shape=21, size=2 ) +
+  geom_label_repel(data = subset(mbv.missing, same_donor == F), 
+                   aes(label = bam_sample_id),
+                   fill = "#CB454A",
+                   size=3,
+                   segment.alpha = 0.3,
+                   label.size = NA, 
+                   alpha = 0.8, 
+                   label.padding=.1, 
+                   box.padding = .1,
+                   na.rm=TRUE,
+                   seed = 1234) +
+  geom_label_repel(data = subset(mbv.missing, same_donor == T & perc_het_consistent<0.5), 
+                 aes(label = bam_sample_id),
+                 fill = "grey",
+                 size=3,
+                 segment.alpha = 0.3,
+                 label.size = NA, 
+                 alpha = 0.8, 
+                 label.padding=.1, 
+                 box.padding = .1,
+                 na.rm=TRUE,
+                 seed = 1234) +
+  expand_limits(y = 1, x = 1) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_manual(values = c("#CB454A","grey")) +
+  labs(y = "Concordance at HOM", x = "Concordance at HET", fill = "Matching donor", alpha = "Status") +
+  theme_classic()
+```
+
+Showing results for all **301** RNA-seq samples that were genotyped (each dot is one sample). Labels in red are missmatching samples.
+
+```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=6, fig.height=3}
+# Removing RNAseq missing GSA
+mbv = mbv[!mbv$bam_donor_id %in% metadata.missing$Donor_id,] # 301 samples
+
+# sum(mbv$bam_donor_id==mbv$sample_donor_id) # 287 samples matching RNA and DNA
+mbv$same_donor = mbv$bam_donor_id==mbv$sample_donor_id 
+
+mbv$status = NA
+mbv$status[mbv$same_donor==T] = "Match"
+mbv$status[mbv$same_donor==F] = "Not Match"
+mbv$status[mbv$bam_donor_id %in% metadata.missing$Donor_id] = "Not Genotyped"
+
+ggplot(mbv, aes(x = perc_het_consistent, y = perc_hom_consistent, fill = same_donor)) +
+  geom_vline(xintercept=0.5, color="grey", linetype = "dashed") + 
+  geom_point(shape=21, alpha=0.4, size=2) +
+  geom_point(data = subset(mbv, same_donor == F), alpha = 0.8, shape=21, size=2 ) +
+  geom_label_repel(data = subset(mbv, same_donor == F), 
+                   aes(label = bam_donor_id),
+                   fill = "#CB454A",
+                   size=3,
+                   segment.alpha = 0.3,
+                   label.size = NA, 
+                   alpha = 0.8, 
+                   label.padding=.1, 
+                   box.padding = .1,
+                   na.rm=TRUE,
+                   seed = 1234) +
+  expand_limits(y = 1, x = 1) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_manual(values = c("#CB454A","grey")) +
+  labs(y = "Concordance at HOM", x = "Concordance at HET", fill = "Matching donor", alpha = "Status") +
+  theme_classic()
+```
+
+Now showing only the samples where donors passed all previous QC metrics (**261 samples/100 donors**)
+
+```{r warning=FALSE, message=FALSE, results='hide', fig.keep='all', dpi=300, fig.width=6, fig.height=3}
+mbv.filtered = mbv[mbv$bam_sample_id %in% metadata_final$donor_tissue,]
+ggplot(mbv.filtered, aes(x = perc_het_consistent, y = perc_hom_consistent, fill = same_donor)) +
+  geom_vline(xintercept=0.5, color="grey", linetype = "dashed") + 
+  geom_point(shape=21, alpha=0.4, size=2) +
+  geom_point(data = subset(mbv.filtered, same_donor == F), alpha = 0.8, shape=21, size=2 ) +
+  geom_label_repel(data = subset(mbv.filtered, same_donor == F), 
+                   aes(label = bam_sample_id),
+                   fill = "#CB454A",
+                   size=3,
+                   segment.alpha = 0.3,
+                   label.size = NA, 
+                   alpha = 0.8, 
+                   label.padding=.1, 
+                   box.padding = .1,
+                   na.rm=TRUE,
+                   seed = 1234) +
+  geom_label_repel(data = subset(mbv.filtered, same_donor == T & perc_het_consistent<0.5), 
+                 aes(label = bam_sample_id),
+                 fill = "grey",
+                 size=3,
+                 segment.alpha = 0.3,
+                 label.size = NA, 
+                 alpha = 0.8, 
+                 label.padding=.1, 
+                 box.padding = .1,
+                 na.rm=TRUE,
+                 seed = 1234) +
+  expand_limits(y = 1, x = 1) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_manual(values = c("#CB454A","grey")) +
+  labs(y = "Concordance at HOM", x = "Concordance at HET", fill = "Matching donor", alpha = "Status") +
+  theme_classic()
+```
+
+From 261 (after-QC) RNAseq samples, 258 (98 donors) matched donors with DNA.
+
+Here is the list of missmatching samples.
+
+```{r}
+#length(unique(mbv.filtered$bam)) # 261 RNAseq bam files
+#length(unique(metadata$Donor_tissue)) # 314
+#length(unique(mbv$bam_sample_id)) # 291
+#length(unique(mbv$bam_donor_id)) # 105 donors (from RNAseq bam ids)
+#length(unique(mbv$SampleID)) # 108 donors (from GSA) - best matches for each RNAseq sample
+#sum(unique(mbv$bam_sample_id) %in% unique(metadata$Donor_tissue)) # 291 samples (bam ids) are in the metadata
+#sum(unique(mbv$bam_donor_id) %in% unique(metadata$Donor_id)) # 105 donors (bam ids) are in the metadata
+
+#sum(mbv$bam_donor_id==mbv$sample_donor_id) # 287 RNAseq samples are matching donors with DNA
+#sum(mbv.filtered$bam_donor_id==mbv.filtered$sample_donor_id) # 258 RNAseq samples are matching donors with DNA
+
+mbv_match = mbv.filtered[which(mbv.filtered$bam_donor_id==mbv.filtered$sample_donor_id),]
+#length(unique(mbv_match$bam_donor_id)) # 98 donors
+mbv_miss = mbv.filtered[which(!mbv.filtered$bam_donor_id==mbv.filtered$sample_donor_id),]
+
+mbv_miss$PassMBV = mbv_miss$perc_het_consistent>0.5
+createDT(mbv_miss)
+```
+
+# Final results
+
+After removing non-concordant samples.
+
+Final numbers:
+
+|         | Donors | Samples |
+|---      |---     |---      |
+|All      | 98     | 258     |
+|EUR-only | 90     | 236     |
+
+Showing below metadata for all ancestries
+
+```{r}
+metadata_final2 = metadata_final[metadata_final$donor_tissue %in% mbv_match$bam_sample_id,]
+metadata_final2 = dplyr::left_join(metadata_final2, mds.usable, by = c("merged_gsa_id" = "IID"))
+#length(unique(metadata_final2$donor_id)) # 98 donors
+# Select european ancestry individuals
+metadata_final2.eur = metadata_final2[metadata_final2$donor_id %in% genotype.fam.merged.usable.eur$Donor_id,]
+#length(unique(metadata_final2.eur$donor_id)) # 90 donors
+
+write.table(metadata_final2, file = paste0(write_dir,"metadata4eQTL.txt"), quote = F, row.names = F, sep = "\t")
+write.table(metadata_final2.eur, file = paste0(write_dir,"metadata4eQTL_eur.txt"), quote = F, row.names = F, sep = "\t")
+
+# Select ids for filtering samples in the plink file
+write.table(metadata_final2[,c("merged_gsa_id2")], file = paste0(write_dir,"gsa_ids_4eQTL_final2.txt"), quote = F, row.names = F, col.names = F, sep=" ")
+# Mapping GSA names to donor_id
+write.table(metadata_final2[,c("merged_gsa_id2","donor_id")], file = paste0(write_dir,"gsa_ids_4eQTL_final2.namesMap.txt"), quote = F, row.names = F, col.names = F, sep=" ")
+
+# Select ids for filtering samples in the plink file
+write.table(metadata_final2.eur[,c("merged_gsa_id2")], file = paste0(write_dir,"gsa_ids_4eQTL_final2.eur.txt"), quote = F, row.names = F)
+# Mapping GSA names to donor_id
+write.table(metadata_final2.eur[,c("merged_gsa_id2","donor_id")], file = paste0(write_dir,"gsa_ids_4eQTL_final2.eur.namesMap.txt"), quote = F, row.names = F, col.names = F, sep=" ")
+
+createDT(metadata_final2)
+```
+
+```{bash eval=F, echo=F}
+cd /hpc/users/viallr01/ad-omics/ricardo/gsa
+plink --bfile /hpc/users/viallr01/pd-omics_hydra/glia_omics/genotypes/gsa123456_geno95_hwe6_mind95_het3sd --keep gsa_ids_4eQTL_final2.eur.txt --make-bed --out gsa123456_geno95_hwe6_mind95_het3sd_90_samples 
+mkdir -p forImputation
+cd forImputation
+plink --bfile ../gsa123456_geno95_hwe6_mind95_het3sd_90_samples --recode vcf --out gsa123456_geno95_hwe6_mind95_het3sd_90_samples #--output-chr MT
+bcftools reheader --samples ../gsa_ids_4eQTL_final2.eur.namesMap.txt gsa123456_geno95_hwe6_mind95_het3sd_90_samples.vcf | bcftools sort -o gsa123456_geno95_hwe6_mind95_het3sd_90_samples.renamed.vcf
+
+VCF="gsa123456_geno95_hwe6_mind95_het3sd_90_samples.renamed.vcf"
+VCFGZ="${VCF##*/}.gz"  # get basename and add .gz compression extension
+
+bgzip -c $VCF > $VCFGZ  #compress vcf
+tabix -p vcf $VCFGZ  # index compressed vcf
+tabix --list-chroms $VCFGZ > chromosomes.txt  # save all the chromosome names into a file
+
+while IFS= read -r line; do
+  bcftools view -r $line $VCFGZ | bcftools sort > microglia_90_donors_${line}.vcf;
+  bgzip -c microglia_90_donors_${line}.vcf > microglia_90_donors_${line}.vcf.gz
+  tabix -f -p vcf microglia_90_donors_${line}.vcf.gz
+done < chromosomes.txt  # make an individual vcf for each chromosome
+
+```
+
+# Final QC status
+
+```{r}
+# table(failed_samples_df$status) # 79 failed, 235 Ok
+createDT(failed_samples_df)
+```
+
+```{bash eval=F, echo=F}
+# After imputation
+
+# Lift over to GRCh38
+cd /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/post_imputation_filtering/eur
+mkdir -p picard_liftover
+cd picard_liftover
+
+ml picard/2.20.5.lua
+liftover_path="/sc/hydra/projects/pd-omics/evan/eqtl/full_impute/eur/liftover_hg38"
+ln -s -f ${liftover_path}/hg38.fa hg38.fa
+cp ${liftover_path}/hg38.dict .
+#ml gatk/4.1.6.0.lua
+#gatk CreateSequenceDictionary -R hg38.fa
+
+zcat ~/ad-omics/ricardo/gsa/b37ToHg38.over.chain.gz > b37ToHg38.over.chain
+zcat ~/ad-omics/ricardo/gsa/hg19ToHg38.over.chain.gz > hg19ToHg38.over.chain
+
+for pathfile in ../imputed_files/*.dose.vcf; do
+
+  file=$(basename "$pathfile")
+  id=`echo $file | cut -d '.' -f 1`
+
+  echo "awk '(/^#/ || (\$5 ~ /</ ))' $pathfile > ${id}.not_included.vcf; \
+  awk '(/^#/ || !(\$5 ~ /</ ))' $pathfile > ${id}.tmp.vcf; \
+  java -jar -Xmx12g picard.jar LiftoverVcf I=${id}.tmp.vcf O=${id}.hg38.vcf CHAIN=b37ToHg38.over.chain REJECT=${id}.rejected_variants.vcf MAX_RECORDS_IN_RAM=30000 R=hg38.fa; \
+  rm ${id}.tmp.vcf; \
+  bgzip -c ${id}.rejected_variants.vcf > ${id}.rejected_variants.vcf.gz; \
+  bgzip -c ${id}.hg38.vcf > ${id}.hg38.vcf.gz; tabix -f -p vcf ${id}.hg38.vcf.gz;" | bsub -n 1 -R "rusage[mem=16000]" -W 12:00 -oo ${id}.out -eo ${id}.err -P acc_ad-omics -q express -J ${id}
+
+done
+
+## # Lift with crossmap
+## cd /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/post_imputation_filtering/eur
+## mkdir -p crossmap_liftover
+## cd crossmap_liftover
+## cp ~/ad-omics/ricardo/gsa/b37ToHg38.over.chain.gz .
+## cp ~/ad-omics/ricardo/gsa/hg19ToHg38.over.chain.gz .
+## 
+## ml crossmap/0.3.2; ml bcftools/1.9;
+## 
+## for pathfile in ../imputed_files/chr10.dose.vcf; do
+##   file=$(basename "$pathfile")
+##   id=`echo $file | cut -d '.' -f 1`
+##   echo $id
+##   echo "CrossMap.py vcf hg19ToHg38.over.chain.gz ${pathfile} ~/ad-omics/data/references/hg38_reference/hg38.fa ${id}.hg38.vcf" | bsub -n 1 -R "rusage[mem=16000]" -W 12:00 -oo ${id}.out -eo ${id}.err -P acc_ad-omics -q express -J ${id}
+## done
+```
+
+```{bash eval=F, echo=F}
+# Filtering variants for eQTL
+cd /hpc/users/viallr01/pd-omics_hydra/glia_omics/eQTL/post_imputation_filtering/eur
+mkdir -p filtered_variants
+cd filtered_variants
+ml vcftools/0.1.15 bcftools/1.9 snpeff/4.3
+
+for pathfile in ../picard_liftover/*.hg38.vcf.gz; do
+
+  file=$(basename "$pathfile")
+  id=`echo $file | cut -d '.' -f 1`
+  echo $id
+  echo "bcftools view -m2 -M2 -v snps --min-af 0.05:minor -g ^miss ${pathfile} | vcftools --vcf - --hwe 1e-6 --remove-indels --recode --recode-INFO-all --stdout | bcftools sort -Oz -o ${id}.hg38.sort.filt.vcf.gz;  tabix -f -p vcf ${id}.hg38.sort.filt.vcf.gz;" | bsub -n 1 -R "rusage[mem=16000]" -W 12:00 -oo ${id}.out -eo ${id}.err -P acc_ad-omics -q express -J ${id}
+  
+done
+
+# dbSNP downloaded from ftp://ftp.ncbi.nlm.nih.gov/snp/organisms/human_9606_b151_GRCh38p7/VCF/All_20180418.vcf.gz
+bcftools concat -a *.hg38.sort.filt.vcf.gz | bcftools sort -Oz -o AllChr.hg38.sort.filt.vcf.gz
+tabix -f -p vcf AllChr.hg38.sort.filt.vcf.gz
+zcat /hpc/users/viallr01/ad-omics/ricardo/Data/GWAS/All_20180418.vcf.gz | sed -e '/^[^#]/s/^/chr/' -e 's/^chrMT/chrM/' > /hpc/users/viallr01/ad-omics/ricardo/Data/GWAS/All_20180418.vcf
+bgzip -c /hpc/users/viallr01/ad-omics/ricardo/Data/GWAS/All_20180418.vcf > /hpc/users/viallr01/ad-omics/ricardo/Data/GWAS/All_20180418.vcf.gz
+tabix -f -p vcf /hpc/users/viallr01/ad-omics/ricardo/Data/GWAS/All_20180418.vcf.gz
+
+bcftools annotate -c ID -a /hpc/users/viallr01/ad-omics/ricardo/Data/GWAS/All_20180418.vcf.gz -Oz -o AllChr.hg38.sort.filt.dbsnp.vcf.gz AllChr.hg38.sort.filt.vcf.gz
+tabix -f -p vcf AllChr.hg38.sort.filt.dbsnp.vcf.gz
+
+# Download snpeff database from here
+#java -jar ${SNPEFF_JAR} databases | grep -i sapiens
+# LRGs downloaded from ftp://ftp.ebi.ac.uk/pub/databases/lrgex/list_LRGs_transcripts_xrefs.txt and ftp://ftp.ebi.ac.uk/pub/databases/lrgex/LRG_GRCh38.bed
+# Download dbNSFP wget ftp://dbnsfp:dbnsfp@dbnsfp.softgenetics.com/dbNSFP4.0c.zip
+#unzip dbNSFP4.0c.zip
+#echo "zcat dbNSFP*_variant.chr* | sort -k1,1 -k2,2n | bgzip -c > dbNSFP.gz" | bsub -n 1 -R "rusage[mem=32000]" -W 12:00 -oo out -eo err -P acc_ad-omics -q express -J process
+#tabix -p vcf dbNSFP.gz
+
+java -Xmx12g -jar ${SNPEFF_JAR} ann -hgvs -lof -strict -dataDir /hpc/users/viallr01/ad-omics/ricardo/Data/GWAS/snpEff/data/hg38 -onlyTr /hpc/users/viallr01/ad-omics/ricardo/Data/GWAS/LRG_GRCh38.bed hg38 AllChr.hg38.sort.filt.dbsnp.vcf.gz | bgzip -c > AllChr.hg38.sort.filt.dbsnp.snpeff2.vcf.gz 
+tabix -p vcf AllChr.hg38.sort.filt.dbsnp.snpeff.vcf.gz
+
+
+java -Xmx12g -jar ${SNPSIFT_JAR} dbnsfp -db /sc/arion/projects/ad-omics/ricardo/Data/GWAS/dnNSFP4.0a/dbNSFP.gz -v chr22.hg38.sort.filt.tmp.vcf > chr22.hg38.sort.filt.ann.vcf
+
+
+
+
+
+
+
+
+
+
+ tabix -p vcf dbNSFP.gz
+
+snpEff ann -v	\
+	-noStats -hgvs -lof -strict \
+	-onlyTr LRG.transcripts.txt \   
+	hg19 ${vcf} | \
+snpSift dbnsfp -v \
+	-db ${dbnsfp} \
+	- > ${out}
+	
+	/sc/arion/projects/ad-omics/ricardo/Data/GWAS/dbNSFP4.0a_variant.${id}.gz
+
+
+
+
+
+unzip dbNSFP4.0c.zip
+head -n1 dbNSFP4.0a_variant.chr1.gz > h
+cat dbNSFP*chr* | grep -v ^#chr | sort -k1,1 -k2,2n | cat h - | bgzip -c > dbNSFP.gz
+
+tabix -s 1 -b 2 -e 2 dbNSFP.gz
+
+
+
+bcftools reheader --samples ../gsa_ids_4eQTL_final2.eur.namesMap.txt gsa123456_geno95_hwe6_mind95_het3sd_90_samples.vcf
+
+bcftools 
+
+snakemake -s ../QTL-mapping-pipeline/Snakefile --configfile config.yaml -pr
+
+```
+
+```{r eval=F, echo=F}
+load(paste0(home_folder,"ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/gene_matrix.RData"))
+genes_counts_raw = genes_counts
+genes_tpm_raw = genes_tpm
+genes_counts = genes_counts_raw[rownames(genes_counts_exp), metadata_final2.eur$donor_tissue[metadata_final2.eur$tissue=="MFG"]]
+genes_tpm = genes_tpm_raw[rownames(genes_counts_exp), metadata_final2.eur$donor_tissue[metadata_final2.eur$tissue=="MFG"]]
+dim(genes_counts)
+dim(genes_tpm)
+save(genes_counts, genes_tpm, file = paste0(home_folder,"pd-omics_hydra/glia_omics/eQTL/eur_only/MFG/gene_matrix.RData"))
+
+write.table(metadata_final2.eur[metadata_final2.eur$tissue=="MFG",] %>% dplyr::select(sample_id = donor_tissue, participant_id = donor_id), file = paste0(home_folder,"pd-omics_hydra/glia_omics/eQTL/eur_only/MFG/MFG_sample_key.txt"),quote = F, row.names = F, sep = "\t")
+
+map = read.delim2(paste0(home_folder,"pd-omics_hydra/glia_omics/eQTL/post_imputation_filtering/eur/filtered_variants/list"),header = F)
+map$V2 = gsub("(.*)_(.*)","\\2",map$V1)
+View(map)
+all(unique(metadata_final2.eur$donor_id) %in% map$V1)
+all(map$V1 %in% unique(metadata_final2.eur$donor_id))
+
+write.table(map,paste0(home_folder, "pd-omics_hydra/glia_omics/eQTL/post_imputation_filtering/eur/filtered_variants/renamesamples"), quote = F, row.names = F, col.names = F, sep=" ")
+```
+
+```{r eval=F, echo=F}
+get_os <- function(){
+  sysinf <- Sys.info()
+  if (!is.null(sysinf)){
+    os <- sysinf['sysname']
+    if (os == 'Darwin')
+      os <- "osx"
+  } else { ## mystery machine
+    os <- .Platform$OS.type
+    if (grepl("^darwin", R.version$os))
+      os <- "osx"
+    if (grepl("linux-gnu", R.version$os))
+      os <- "linux"
+    if (grepl("mingw", R.version$os))
+      os <- "windows"
+  }
+  tolower(os)
+}
+
+if (get_os()=="windows"){
+  home_folder = "Z:/hpc/users/viallr01/"
+}else{
+  home_folder = "~/"
+}
+
+
+outputDir=paste0(home_folder,"pd-omics_hydra/glia_omics/eQTL/eur_only/fastqtl")
+
+VCF=paste0(home_folder,"pd-omics_hydra/glia_omics/eQTL/post_imputation_filtering/eur/filtered_variants/AllChr.hg38.sort.filt.dbsnp.snpeff.vcf.gz")
+BED=paste0(home_folder,"pd-omics_hydra/glia_omics/eQTL/eur_only/QTL-mapping-pipeline/results/MFG_eur_expression/MFG_eur_expression.expression.bed.gz")
+
+pheno.bed = read.delim2(BED)
+
+expression_dir = paste0(work_dir,"expression_tables_added_pilot_314s/")
+
+load(file = paste0(home_folder,"pd-omics_hydra/glia_omics/eQTL/eur_only/MFG/gene_matrix.RData"))
+metadata_path = paste0(home_folder,"pd-omics/katia/Microglia/mic_314s/metadata_files/")
+metadata.filt = read.table(paste0(metadata_path,"metadata_285filt_eng_3mar2020.txt"), header = T, check.names = F, sep="\t", stringsAsFactors = F)
+colnames(genes_counts) = metadata.filt[na.omit(match(colnames(genes_counts),metadata.filt$donor_tissue)),"donor_id"]
+
+
+position = read.table(paste0(home_folder,"ad-omics/ricardo/Data/ENSEMBL_ANNOTATION/gencode.v30.primary_assembly.annotation.reflat"), stringsAsFactors = F, header = F)
+pos.bed = read.table(paste0(home_folder,"ad-omics/ricardo/Data/ENSEMBL_ANNOTATION/gencode.v30.bed"), stringsAsFactors = F, header = F) 
+colnames(pos.bed) = c("ensembl","transcript","chr","strand","start","end")
+
+pos.bed.filt = pos.bed[na.omit(match(rownames(genes_counts), pos.bed$ensembl)),]
+all(pos.bed.filt$ensembl == rownames(genes_counts))
+
+
+library(sva)
+
+
+install.packages("C:/Users/Ricardo/Downloads/R_peer_source_1.3.tgz", repos = NULL, type = "source")
+```
+
+```{bash, eval=F, echo=F}
+module load fastqtl/2.184
+
+outputDir="/sc/hydra/projects/pd-omics/glia_omics/eQTL/eur_only/fastqtl"
+cd ${outputDir}
+
+VCF="/sc/hydra/projects/pd-omics/glia_omics/eQTL/post_imputation_filtering/eur/filtered_variants/AllChr.hg38.sort.filt.dbsnp.snpeff.vcf.gz"
+BED="/sc/hydra/projects/pd-omics/glia_omics/eQTL/eur_only/QTL-mapping-pipeline/results/MFG_eur_expression/MFG_eur_expression.expression.bed.gz"
+
+# Copy BED file with the expression info. Sort by position, compress and index
+sortBed -header -i ${exprBedFile} > ${outputDir}/eQTLResidualExpression.bed; bgzip -c ${outputDir}/eQTLResidualExpression.bed > ${outputDir}/eQTLResidualExpression.bed.gz; tabix -p bed ${outputDir}/eQTLResidualExpression.bed.gz
+
+
+bgzip -d ${BED} > ${outputDir}/phenotypes.bed
+tabix -f -p bed ${outputDir}/phenotypes.bed
+
+for i in $(seq 1 22); do
+fastQTL --vcf ${VCF} --bed ${BED} --out ${outputDir}/fastQTL.nominal.output.chunk_$i.txt.gz \
+        --chunk $i 22 \
+        --window 1e6 \
+        --seed 123456789 \
+        --normal
+done
+zcat ${outputDir}/${svtype}_fastQTL.nominal.output.chunk_*.txt.gz | gzip -c > ${outputDir}/${svtype}_FinalResults_fastQTL_nominal.gz
+rm -rf ${outputDir}/${svtype}_fastQTL.nominal.output.chunk_*.txt.gz
+
+# Run permutation pass
+for i in $(seq 1 22); do
+fastQTL --vcf ${outputDir}/${svtype}_merged_Final.vcf.gz --bed ${outputDir}/eQTLResidualExpression.bed.gz --out ${outputDir}/${svtype}_fastQTL.output.chunk_$i.txt.gz \
+        --permute 10000 \
+        --chunk $i 22 \
+        --window 1e6 \
+        --seed 123456789 \
+        --normal \
+        --exclude-samples ${outputDir}/exclude_samples.uniq.exc
+done
+zcat ${outputDir}/${svtype}_fastQTL.output.chunk_*.txt.gz | gzip -c > ${outputDir}/${svtype}_FinalResults_fastQTL.gz
+rm -rf ${outputDir}/${svtype}_fastQTL.output.chunk_*.txt.gz
+
+zcat ${outputDir}/${svtype}_FinalResults_fastQTL.gz > ${outputDir}/${svtype}_FinalResults_fastQTL.txt
+
+
+```
+
+# Session info
+
+```{r}
+sessionInfo()
+```

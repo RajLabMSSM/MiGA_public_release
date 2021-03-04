@@ -1,0 +1,256 @@
+---
+title: "mashR: tissue-specific effects"
+subtitle: "sQTL results"
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> Previous pipeline: https://github.com/RajLabMSSM/mashR 
+
+> GTEx paper: https://www.nature.com/articles/s41588-018-0268-8 
+
+> https://stephenslab.github.io/gtexresults/Tspecific.html 
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+library("lattice")
+library("dplyr")
+library("rmeta")
+library("ggsci")
+
+fastqtl_to_mash_output = "~/pd-omics/katia/Microglia/mic_255s/mashr_sqtl_3rd/fastqtl_to_mash_output/"
+mashr_flashr_workflow_output = "~/pd-omics/katia/Microglia/mic_255s/mashr_sqtl_3rd/mashr_flashr_workflow_output/"
+code_folder = "~/ad-omics_hydra/microglia_omics/mash_sQTL_no2points_id_OLD/code/"
+work_dir = "~/pd-omics/katia/Microglia/mic_255s/mashr_sqtl_3rd/"
+  
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r input}
+mash_rds = readRDS(paste0(fastqtl_to_mash_output, "QTLSumStats.mash.rds"))
+#names(mash_rds)
+
+maxb <- mash_rds$strong.b
+maxz <- mash_rds$strong.z
+
+mash_posterior = readRDS(paste0(mashr_flashr_workflow_output, "QTLSumStats.mash.EZ.FL_PC3.V_simple.posterior.rds"))
+# names(mash_posterior)
+# head(mash_posterior$lfsr)
+# dim(mash_posterior$lfsr)
+
+pm.mash <- mash_posterior$PosteriorMean
+lfsr.all <- mash_posterior$lfsr
+standard.error <- maxb/maxz
+pm.mash.beta <- pm.mash*standard.error
+
+#pm.mash.beta <- pm.mash.beta[rowSums(lfsr.all<0.10)>0,]
+
+```
+
+## Number of TS 
+Threshold = lfsr < 0.05
+```{r ts_effect}
+# Compute number of “tissue-specific” effects for each tissue
+# “tissue-specific” to mean that the effect is at least 2-fold larger in one tissue than in any other tissue. 
+
+source(paste0(code_folder, "normfuncs.R"))
+thresh <- 0.05
+
+lfsr.mash = lfsr.all
+nsig                <- rowSums(lfsr.mash < thresh) # ensembl | number of columns its significative
+pm.mash.beta.norm   <- het.norm(effectsize = pm.mash.beta)
+pm.mash.beta.norm   <- pm.mash.beta.norm[nsig > 0,]
+lfsr.mash           <- as.matrix(lfsr.mash[nsig > 0,])
+colnames(lfsr.mash) <- colnames(maxz)
+a         <- which(rowSums(pm.mash.beta.norm > 0.5) == 1)
+lfsr.fold <- as.matrix(lfsr.mash[a,])
+pm        <- as.matrix(pm.mash.beta.norm[a,])
+tspec     <- NULL
+for(i in 1:ncol(pm))
+  tspec[i] <- sum(pm[,i] > 0.5)
+tspec           <- as.matrix(tspec)
+rownames(tspec) <- colnames(maxz)
+rownames(tspec) <- gsub("(.*?)_(.*)", "\\1", rownames(tspec))
+colnames(tspec) <- c("number_TS")
+createDT(tspec)
+```
+
+## Barplot of TS 
+Plot number of “tissue-specific” effects for each tissue. 
+“Tissue-specific” to mean that the effect is at least 2-fold larger in one tissue than in any other tissue.
+```{r barplot, fig.width=3, fig.height=4}
+# Plot number of “tissue-specific” effects for each tissue 
+colnames(lfsr.fold) <- gsub("(.*?)_(.*)", "\\1", colnames(lfsr.fold))
+tissue.colors = pal_futurama()(4)
+
+#pdf(file = "/Users/katia/OneDrive/Documentos/MountSinai/Projects/Microglia/Figures4paper/tissu_spec_005_sQTL.pdf", width = 3, height = 4)
+barplot(as.numeric(t(tspec)),las = 1,cex.names = 0.75,col = tissue.colors,
+        names = colnames(lfsr.fold),
+        xlab = "Region",
+        ylab = "Tissue-specific effects")
+#dev.off()
+```
+
+## TS effect total
+Number of total “tissue-specific” effects:  
+```{r dim_ts_effect}
+# Unique gene-SNP pair 
+dim(lfsr.fold)[1]
+```
+
+## TS effects lists 
+What are the sCluster-SNP pairs from the barplot?  
+
+```{r list_genes}
+colnames(pm) <- gsub("(.*?)_(.*)", "\\1", colnames(pm))
+gene_snp_list = list()
+
+for(i in 1:ncol(pm))
+  gene_snp_list[[colnames(pm)[i]]] <- rownames(pm)[pm[,i] > 0.5]
+
+## Get conversion table for Gencode 30
+gencode_30 = read.table("~/pd-omics/katia/ens.geneid.gencode.v30", header = T)
+gencode_30$ensembl = gsub("(.*?)\\.(.*)", "\\1", gencode_30$gene_id)
+```
+
+### MFG TS list
+sClusters
+```{r list_MFG}
+MFG = as.data.frame(gene_snp_list$MFG)
+colnames(MFG) = c("scluster_snp")
+MFG$ensembl = MFG$scluster_snp
+MFG$ensembl = gsub("_ENS", ":ENS", MFG$ensembl)
+MFG$ensembl = gsub("(.*?):(.*)", "\\2", MFG$ensembl)
+MFG$ensembl = gsub("(.*?)_(.*)", "\\1", MFG$ensembl)
+
+MFG_symbol = merge(MFG, gencode_30, by = "ensembl")
+MFG_symbol$gene_id = NULL 
+
+MFG_symbol$rs_id = MFG_symbol$scluster_snp
+MFG_symbol$rs_id = gsub("_s", ":rs", MFG_symbol$scluster_snp)
+MFG_symbol$rs_id = gsub("(.*?):(.*)", "\\2", MFG_symbol$rs_id)
+  
+MFG_symbol$scluster_snp = gsub("_s", "_rs",  MFG_symbol$scluster_snp)  
+
+write.table(MFG_symbol, file = paste0(work_dir, "ts_effect_5per_lists/ts_effect_2fold_MFG_sQTL.txt"), quote = F, row.names = F, sep = "\t")
+createDT(MFG_symbol)
+
+```
+
+### STG TS list
+sClusters
+```{r list_STG}
+STG = as.data.frame(gene_snp_list$STG)
+colnames(STG) = c("scluster_snp")
+STG$ensembl = STG$scluster_snp
+STG$ensembl = gsub("_ENS", ":ENS", STG$ensembl)
+STG$ensembl = gsub("(.*?):(.*)", "\\2", STG$ensembl)
+STG$ensembl = gsub("(.*?)_(.*)", "\\1", STG$ensembl)
+
+STG_symbol = merge(STG, gencode_30, by = "ensembl")
+STG_symbol$gene_id = NULL 
+
+STG_symbol$rs_id = STG_symbol$scluster_snp
+STG_symbol$rs_id = gsub("_s", ":rs", STG_symbol$scluster_snp)
+STG_symbol$rs_id = gsub("(.*?):(.*)", "\\2", STG_symbol$rs_id)
+  
+STG_symbol$scluster_snp = gsub("_s", "_rs",  STG_symbol$scluster_snp)  
+
+write.table(STG_symbol, file = paste0(work_dir, "ts_effect_5per_lists/ts_effect_2fold_STG_sQTL.txt"), quote = F, row.names = F, sep = "\t")
+createDT(STG_symbol)
+
+```
+
+### THA TS list
+sClusters
+```{r list_THA}
+THA = as.data.frame(gene_snp_list$THA)
+colnames(THA) = c("scluster_snp")
+THA$ensembl = THA$scluster_snp
+THA$ensembl = gsub("_ENS", ":ENS", THA$ensembl)
+THA$ensembl = gsub("(.*?):(.*)", "\\2", THA$ensembl)
+THA$ensembl = gsub("(.*?)_(.*)", "\\1", THA$ensembl)
+
+THA_symbol = merge(THA, gencode_30, by = "ensembl")
+THA_symbol$gene_id = NULL 
+
+THA_symbol$rs_id = THA_symbol$scluster_snp
+THA_symbol$rs_id = gsub("_s", ":rs", THA_symbol$scluster_snp)
+THA_symbol$rs_id = gsub("(.*?):(.*)", "\\2", THA_symbol$rs_id)
+  
+THA_symbol$scluster_snp = gsub("_s", "_rs",  THA_symbol$scluster_snp)  
+
+write.table(THA_symbol, file = paste0(work_dir, "ts_effect_5per_lists/ts_effect_2fold_THA_sQTL.txt"), quote = F, row.names = F, sep = "\t")
+createDT(THA_symbol)
+
+```
+
+### SVZ TS list
+sClusters
+```{r list_SVZ}
+SVZ = as.data.frame(gene_snp_list$SVZ)
+colnames(SVZ) = c("scluster_snp")
+SVZ$ensembl = SVZ$scluster_snp
+SVZ$ensembl = gsub("_ENS", ":ENS", SVZ$ensembl)
+SVZ$ensembl = gsub("(.*?):(.*)", "\\2", SVZ$ensembl)
+SVZ$ensembl = gsub("(.*?)_(.*)", "\\1", SVZ$ensembl)
+
+SVZ_symbol = merge(SVZ, gencode_30, by = "ensembl")
+SVZ_symbol$gene_id = NULL 
+
+SVZ_symbol$rs_id = SVZ_symbol$scluster_snp
+SVZ_symbol$rs_id = gsub("_s", ":rs", SVZ_symbol$scluster_snp)
+SVZ_symbol$rs_id = gsub("(.*?):(.*)", "\\2", SVZ_symbol$rs_id)
+  
+SVZ_symbol$scluster_snp = gsub("_s", "_rs",  SVZ_symbol$scluster_snp)  
+
+write.table(SVZ_symbol, file = paste0(work_dir, "ts_effect_5per_lists/ts_effect_2fold_SVZ_sQTL.txt"), quote = F, row.names = F, sep = "\t")
+createDT(SVZ_symbol)
+
+```
+
+```{r}
+sessionInfo()
+```
+

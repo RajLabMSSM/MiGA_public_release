@@ -1,0 +1,142 @@
+---
+title: "Results from e-QTL"
+subtitle: "by Brain region"
+author:  |
+ | 
+ | Katia de Paiva Lopes
+ | Ricardo A Vialle
+ | Jack Humphrey
+ | 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+library(ggplot2)
+library(ggsci)
+library(venn)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r dir, echo=TRUE}
+work_results = "~/pd-omics/katia/Microglia/mic_314s/eQTL_mic/2nd_pass_eQTL/EUR/QTL-mapping-pipeline/results/"
+work_dir = "~/pd-omics/katia/scripts/GitHub_scripts/glia_omics/2nd_pass_mic_314s/QTL_pages/2nd_pass/eQTL_lists_symbol_2nd/"
+
+## Get conversion table for Gencode 30
+gencode_30 = read.table("~/pd-omics/katia/ens.geneid.gencode.v30")
+colnames(gencode_30) = c("ensembl","symbol")
+```
+
+## MFG eGenes qvalue 10%
+Media Frontal Gyrus - PEER 10. Number of **eGenes**: 
+```{r MFG_numbers}
+peer10 = read.table(gzfile(paste0(work_results, "MFG_eur_expression/peer10/MFG_eur_expression_peer10.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+rownames(peer10) = peer10$phenotype_id
+sum(peer10$qval < 0.10) 
+eGenes = peer10[(peer10$qval < 0.10),]
+eGenes = merge(eGenes, gencode_30, by.x = "phenotype_id", by.y = "ensembl")
+write.table(eGenes, file = paste0(work_dir, "eGEnes_eur_MFG_qval10per.txt"), sep = "\t", quote = F, row.names = F)
+
+MFG_symbol = unique(eGenes$symbol)
+createDT(eGenes[, c("symbol", colnames(eGenes)[!colnames(eGenes)=="symbol"])])
+```
+
+## STG eGenes qvalue 10%
+Superior Temporal Gyrus - PEER 10. Number of **eGenes**: 
+```{r STG_numbers}
+peer10 = read.table(gzfile(paste0(work_results, "STG_eur_expression/peer10/STG_eur_expression_peer10.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+rownames(peer10) = peer10$phenotype_id
+sum(peer10$qval < 0.10) 
+eGenes = peer10[(peer10$qval < 0.10),]
+eGenes = merge(eGenes, gencode_30, by.x = "phenotype_id", by.y = "ensembl")
+write.table(eGenes, file = paste0(work_dir, "eGEnes_eur_STG_qval10per.txt"), sep = "\t", quote = F, row.names = F)
+
+STG_symbol = unique(eGenes$symbol)
+createDT(eGenes[, c("symbol", colnames(eGenes)[!colnames(eGenes)=="symbol"])])
+```
+
+## THA eGenes qvalue 10%
+Thalamus - PEER 10. Number of **eGenes**: 
+```{r THA_numbers}
+peer10 = read.table(gzfile(paste0(work_results, "THA_eur_expression/peer10/THA_eur_expression_peer10.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+rownames(peer10) = peer10$phenotype_id
+sum(peer10$qval < 0.10) 
+eGenes = peer10[(peer10$qval < 0.10),]
+eGenes = merge(eGenes, gencode_30, by.x = "phenotype_id", by.y = "ensembl")
+write.table(eGenes, file = paste0(work_dir, "eGEnes_eur_THA_qval10per.txt"), sep = "\t", quote = F, row.names = F)
+
+THA_symbol = unique(eGenes$symbol)
+createDT(eGenes[, c("symbol", colnames(eGenes)[!colnames(eGenes)=="symbol"])])
+```
+
+## SVZ eGenes qvalue 10%
+Subventricular zone - PEER 5. Number of **eGenes**: 
+```{r SVZ_numbers}
+peer5 = read.table(gzfile(paste0(work_results, "SVZ_eur_expression/peer5/SVZ_eur_expression_peer5.cis_qtl.txt.gz")), stringsAsFactors=F, header = T)
+rownames(peer5) = peer5$phenotype_id
+sum(peer5$qval < 0.10) 
+eGenes = peer5[(peer5$qval < 0.10),]
+eGenes = merge(eGenes, gencode_30, by.x = "phenotype_id", by.y = "ensembl")
+write.table(eGenes, file = paste0(work_dir, "eGEnes_eur_SVZ_qval10per.txt"), sep = "\t", quote = F, row.names = F)
+
+SVZ_symbol = unique(eGenes$symbol)
+createDT(eGenes[, c("symbol", colnames(eGenes)[!colnames(eGenes)=="symbol"])])
+```
+
+## eGenes overlap 
+Considering only the symbol. 
+```{r venn, fig.width=4, fig.height=4, dpi=100}
+sample_overlap = list(MFG = MFG_symbol,
+                      STG = STG_symbol,
+                      THA = THA_symbol,
+                      SVZ = SVZ_symbol)
+
+venn(sample_overlap, zcolor = pal_lancet(palette = c("lanonc"), alpha = 1)(5), 
+     cexil = 1.1, ilcs = 1.5, sncs = 1.0, lwd = 1)
+
+```
+
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,324 @@
+---
+title: "Post mashR pipeline"
+subtitle: "Brain regions"
+author:  |
+ | Katia de Paiva Lopes 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> Previous pipeline: https://github.com/RajLabMSSM/mashR 
+
+> GTEx paper: https://www.nature.com/articles/s41588-018-0268-8 
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+library("lattice")
+library("dplyr")
+library("rmeta")
+library("ggsci")
+
+fastqtl_to_mash_output = "~/pd-omics/katia/Microglia/mic_314s/mashr_files/output_rds_mashr/2nd_pass/fastqtl_to_mash_output/"
+mashr_flashr_workflow_output = "~/pd-omics/katia/Microglia/mic_314s/mashr_files/output_rds_mashr/2nd_pass/mashr_flashr_workflow_output/"
+code_folder = "~/pd-omics_hydra/katia/softwares/mash/gtexresults/code/"
+work_dir = "~/pd-omics/katia/Microglia/mic_314s/mashr_files/output_lists_mashr/2nd_pass/"
+  
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r input_data}
+mash_rds = readRDS(paste0(fastqtl_to_mash_output, "QTLSumStats.mash.rds"))
+# names(mash_rds)
+
+maxb <- mash_rds$strong.b
+maxz <- mash_rds$strong.z
+
+mash_posterior = readRDS(paste0(mashr_flashr_workflow_output, "QTLSumStats.mash.EZ.FL_PC3.V_simple.posterior.rds"))
+# names(mash_posterior)
+# head(mash_posterior$lfsr)
+# dim(mash_posterior$lfsr)
+
+pm.mash <- mash_posterior$PosteriorMean
+lfsr.all <- mash_posterior$lfsr
+standard.error <- maxb/maxz
+pm.mash.beta <- pm.mash*standard.error
+```
+
+## lfsr table at 10%
+lfsr = local false sign rate. Method proposed by Stephens, it is analogous to FDR. 
+Number of significative genes:
+```{r lfsr.sign}
+pm.mash.beta <- pm.mash.beta[rowSums(lfsr.all<0.10)>0,]
+lfsr.mash <- lfsr.all[rowSums(lfsr.all<0.10)>0,] # lfsr.mash have the significant results. 
+# Means they have lfsr less than 0.10 in at least one condition.
+dim(lfsr.mash)[1] 
+lfsr.mash_symbol = as.data.frame(lfsr.mash)
+lfsr.mash_symbol$ensembl = gsub("(.*?)_(.*)", "\\1", rownames(lfsr.mash_symbol))
+
+## Get conversion table for Gencode 30
+gencode_30 = read.table("~/pd-omics/katia/ens.geneid.gencode.v30", header = T)
+gencode_30$ensembl = gsub("(.*?)\\.(.*)", "\\1", gencode_30$gene_id)
+
+lfsr.mash_symbol = merge(lfsr.mash_symbol, gencode_30, by = "ensembl")
+rownames(lfsr.mash_symbol) <- rownames(lfsr.mash)
+lfsr.mash_symbol$ensembl <- NULL 
+colnames(lfsr.mash_symbol) = gsub("(.*?)_(.*)","\\1",colnames(lfsr.mash_symbol))
+
+lfsr.mash_symbol = lfsr.mash_symbol[,c("gene", "GeneSymbol", "MFG", "STG", "THA", "SVZ")]
+rownames(lfsr.mash_symbol) = gsub("_s", "_rs", rownames(lfsr.mash_symbol))
+
+write.table(lfsr.all, file = paste0(work_dir, "mash_lfsr_all.txt"), sep = "\t", quote = F)
+write.table(lfsr.mash_symbol, file = paste0(work_dir, "mash_lfsr_10per.txt"), sep = "\t", quote = F)
+
+createDT(lfsr.mash_symbol)
+```
+
+## Pairwise plot
+
+<div style="text-align: justify"> 
+Pairwise sharing by magnitude of eQtLs among tissues. For each pair of tissues, we considered the top eQTLs that were significant (lfsr < 0.10) in at least one of the two tissues, and plotted the proportion of these that are shared in magnitude—that is, have effect estimates that are the same sign and within a factor of 2 in size of one another.
+</div>
+```{r heatmap, fig.height=4, fig.width=4, dpi=300}
+thresh <- 0.10
+
+shared.fold.size <- matrix(NA,nrow = ncol(lfsr.mash),ncol=ncol(lfsr.mash))
+colnames(shared.fold.size) <- rownames(shared.fold.size) <- colnames(maxz)
+for (i in 1:ncol(lfsr.mash))
+  for (j in 1:ncol(lfsr.mash)) {
+    sig.row=which(lfsr.mash[,i]<thresh)
+    sig.col=which(lfsr.mash[,j]<thresh)
+    a=(union(sig.row,sig.col))
+    quotient=(pm.mash.beta[a,i]/pm.mash.beta[a,j])
+    shared.fold.size[i,j] = mean(quotient > 0.5 & quotient < 2)
+  }
+
+# Plot heatmap of sharing by magnitude
+# Generate the heatmap using the “levelplot” function from the lattice package.
+
+clrs <- colorRampPalette(rev(c("#D73027","#FC8D59","#FEE090","#FFFFBF",
+                               "#E0F3F8","#91BFDB","#4575B4")))(64)
+lat <- shared.fold.size
+lat[lower.tri(lat)] <- NA
+n <- nrow(lat)
+
+rownames(lat) <- gsub("(.*?)_(.*)", "\\1", rownames(lat))
+colnames(lat) <- gsub("(.*?)_(.*)", "\\1", colnames(lat))
+
+print(levelplot(lat[n:1,],col.regions = clrs,xlab = "",ylab = "",colorkey = TRUE))
+
+```
+
+```{r input_forest}
+# I am reading the input again to garantee the values! 
+
+source(paste0(code_folder, "normfuncs.R"))
+mash_rds = readRDS(paste0(fastqtl_to_mash_output, "QTLSumStats.mash.rds"))
+
+b.stat <- mash_rds$strong.b
+z.stat <- mash_rds$strong.z
+
+mash_posterior = readRDS(paste0(mashr_flashr_workflow_output, "QTLSumStats.mash.EZ.FL_PC3.V_simple.posterior.rds"))
+# names(mash_posterior)
+# head(mash_posterior$lfsr)
+# dim(mash_posterior$lfsr)
+
+posterior.means <- mash_posterior$PosteriorMean
+lfsr <- mash_posterior$lfsr
+
+mar.var <- mash_posterior$PosteriorSD
+
+colnames(lfsr)  <-
+  colnames(mar.var) <- 
+  colnames(posterior.means) <- 
+  colnames(z.stat)
+standard.error  <- b.stat/z.stat
+posterior.betas <- standard.error * posterior.means
+pm.beta.norm    <- het.norm(posterior.betas)
+```
+
+## Metaplots 
+<div style="text-align: justify"> 
+Each dot shows original (raw) effect estimate for a single tissue, then after mashR. Grey bars indicating ±2 s.e. In each case, mash combines information across all tissues, using the background information (patterns of sharing) learned from data on all eQTLs to produce more precise estimates.
+</div>
+```{r metaplot_function}
+tissue.colors = pal_futurama()(4)
+
+create.metaplot <- function (j) {
+  plot.new()
+  pm.beta.norm  <- pm.beta.norm # Shuffle columns.
+  z.shuffle     <- z.stat
+  b.shuffle     <- b.stat
+  post.var      <- mar.var
+  post.bshuffle <- posterior.betas
+  sem.shuffle   <- standard.error
+  lfsr          <- lfsr
+  plot.title    <- strsplit(rownames(z.stat)[j], "[.]")[[1]][1]
+  
+  x <- as.numeric(post.bshuffle[j,])
+  
+  layout(t(1:2))
+  
+  metaplot(as.numeric(b.shuffle[j,]),as.numeric(sem.shuffle[j,]),xlab = "",
+           ylab = "",colors = meta.colors(box = as.character(tissue.colors)),
+           labels = gsub("(.*?)_(.*)","\\1",colnames(z.stat)),
+           xlim = c(-1,1))
+  title(plot.title)
+  
+  # Transform to posterior sd of beta.
+  sd <- as.numeric(sem.shuffle[j,]) * sqrt(as.numeric(post.var[j,]))
+  metaplot(x,sd,xlab = "",ylab = "",
+           colors = meta.colors(box = as.character(tissue.colors)),
+           labels = gsub("(.*?)_(.*)","\\1",colnames(z.stat)),
+           xlim = c(-1,1))
+  title(plot.title)
+}
+```
+
+### Gene: CTSB  
+
+<div style="text-align: justify"> 
+**Cathepsin B**. This gene encodes a member of the C1 family of peptidases. Alternative splicing of this gene results in multiple transcript variants. At least one of these variants encodes a preproprotein that is proteolytically processed to generate multiple protein products. These products include the cathepsin B light and heavy chains, which can dimerize to form the double chain form of the enzyme. This enzyme is a lysosomal cysteine protease with both endopeptidase and exopeptidase activity that may play a role in protein turnover. It is also known as amyloid precursor protein secretase and is involved in the proteolytic processing of amyloid precursor protein (APP). Incomplete proteolytic processing of APP has been suggested to be a causative factor in Alzheimer's disease, the most common cause of dementia. Overexpression of the encoded protein has been associated with esophageal adenocarcinoma and other tumors. Multiple pseudogenes of this gene have been identified. [provided by RefSeq, Nov 2015]
+</div>
+```{r metaplot_CTSB, fig.width=12, fig.height=4, dpi=300, fig.keep='last'}
+create.metaplot(grep("ENSG00000164733", rownames(z.stat)))
+```
+
+### Gene: MS4A6A  
+
+<div style="text-align: justify"> 
+**MS4A6A** (Membrane Spanning 4-Domains A6A) is a Protein Coding gene. Diseases associated with MS4A6A include Polycystic Lipomembranous Osteodysplasia With Sclerosing Leukoencephalopathy and Alzheimer Disease. 
+</div>
+```{r metaplot_MS4A6A, fig.width=12, fig.height=4, dpi=300, fig.keep='last'}
+create.metaplot(grep("ENSG00000110077", rownames(z.stat)))
+```
+
+### Gene: MS4A14  
+
+<div style="text-align: justify"> 
+**MS4A14** (Membrane Spanning 4-Domains A14) is a Protein Coding gene. Diseases associated with MS4A14 include Lagophthalmos and Superficial Keratitis. 
+</div>
+```{r metaplot_MS4A14, fig.width=12, fig.height=4, dpi=300, fig.keep='last'}
+create.metaplot(grep("ENSG00000166928", rownames(z.stat)))
+```
+
+### Gene: FKBP5  
+
+```{r metaplot_MS4A14, fig.width=12, fig.height=4, dpi=300, fig.keep='last'}
+pdf(paste0(work_dir, "metaplot_FKBP5.pdf"), width = 12, height = 4)
+create.metaplot(grep("ENSG00000096060", rownames(z.stat)))
+dev.off()
+```
+
+### Gene: ALDOC
+
+<div style="text-align: justify"> 
+Example of a gene with max value of posterior beta for the tissue: MFG. 
+
+**ALDOC** (Aldolase, Fructose-Bisphosphate C) is a Protein Coding gene. Among its related pathways are Innate Immune System and Glucose metabolism. Gene Ontology (GO) annotations related to this gene include cytoskeletal protein binding and fructose-bisphosphate aldolase activity. 
+</div>
+```{r metaplot_ALDOC, fig.width=12, fig.height=4, dpi=300, fig.keep='last'}
+#posterior.betas[posterior.betas[,1]==max(posterior.betas[,1]),]
+create.metaplot(posterior.betas[,1]==max(posterior.betas[,1]))
+```
+
+### Gene: INTS4P1
+
+<div style="text-align: justify"> 
+Example of a gene with max value of posterior beta for the tissue: STG. 
+
+**INTS4P1** (Integrator Complex Subunit 4 Pseudogene 1) is a Pseudogene. 
+</div>
+```{r metaplot_INTS4P1, fig.width=12, fig.height=4, dpi=300, fig.keep='last'}
+create.metaplot(posterior.betas[,2]==max(posterior.betas[,2]))
+# rownames(z.stat)[posterior.betas[,2]==max(posterior.betas[,2])]
+```
+
+### Gene: NUDT9
+
+<div style="text-align: justify"> 
+Example of a gene with max value of posterior beta for the tissue: SVZ. 
+
+**NUDT9** (Nudix Hydrolase 9) is a Protein Coding gene. Diseases associated with NUDT9 include Type 1 Diabetes Mellitus 10 and Arrhythmogenic Right Ventricular Dysplasia. Among its related pathways are Metabolism and Metabolism of nucleotides. Gene Ontology (GO) annotations related to this gene include hydrolase activity and ADP-sugar diphosphatase activity. 
+</div>
+```{r metaplot_NUDT9, fig.width=12, fig.height=4, dpi=300, fig.keep='last'}
+create.metaplot(posterior.betas[,3]==max(posterior.betas[,3]))
+# rownames(z.stat)[posterior.betas[,3]==max(posterior.betas[,3])]
+```
+
+### Gene: TM7SF2
+
+<div style="text-align: justify"> 
+Example of a gene with max value of posterior beta for the tissue: THA. 
+
+**TM7SF2** (Transmembrane 7 Superfamily Member 2) is a Protein Coding gene. Among its related pathways are Regulation of cholesterol biosynthesis by SREBP and Metabolism. Gene Ontology (GO) annotations related to this gene include oxidoreductase activity, acting on the CH-CH group of donors, NAD or NADP as acceptor and delta14-sterol reductase activity. 
+</div> 
+```{r metaplot_TM7SF2, fig.width=12, fig.height=4, dpi=300, fig.keep='last'}
+create.metaplot(posterior.betas[,4]==max(posterior.betas[,4]))
+# rownames(z.stat)[posterior.betas[,4]==max(posterior.betas[,4])]
+```
+
+## Posterior beta 
+Complete table. Number of gene-SNP pairs: 
+```{r posterior.betas}
+dim(posterior.betas)[1]
+
+## Get conversion table for Gencode 30 from previous chunck 
+posterior.betas_symbol = as.data.frame(posterior.betas)
+colnames(posterior.betas_symbol) = gsub("(.*?)_(.*)","\\1",colnames(posterior.betas_symbol))
+posterior.betas_symbol$ensembl = gsub("(.*?)_(.*)", "\\1", rownames(posterior.betas_symbol))
+posterior.betas_symbol$snp = gsub("(.*?)_(.*)", "\\2", rownames(posterior.betas_symbol))
+posterior.betas_symbol = merge(posterior.betas_symbol, gencode_30, by="ensembl")
+posterior.betas_symbol$gene_id = NULL 
+posterior.betas_symbol = posterior.betas_symbol[,c("ensembl", "snp", "GeneSymbol", "MFG", "STG", "THA", "SVZ")]
+posterior.betas_symbol$snp = gsub("s", "rs", posterior.betas_symbol$snp)
+  
+write.table(posterior.betas, file = paste0(work_dir, "posterior.beta_all.txt"), sep = "\t", quote = F)
+write.table(posterior.betas_symbol, file = paste0(work_dir, "posterior.beta_all_symbol.txt"), sep = "\t", quote = F)
+
+createDT(posterior.betas_symbol)
+```
+
+```{r}
+sessionInfo()
+```
+
+

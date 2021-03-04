@@ -96,5 +96,55 @@ Age-related Analysis
 DE genes with [interaction term](https://rajlabmssm.github.io/MiGA_public_release/age-related_analysis/age_dream_3ndpass_interaction.html). Include scatter plots by region.
 
 ***************************************
+Genotypes
+***************************************
+
+Number of samples for downstream analysis. After GSA includes European only:
+
+| Tissue  | Before GSA filter | After GSA filter |
+| ------------- | ------ | ------ |
+| MFG  | 78  | 63  |
+| STG  | 64  | 55  |
+| THA  | 60  | 53  |
+| SVZ  | 56  | 45  |
+| CC  | 17  | 16  |
+| CER  | 7  | 4  |
+| SN  | 3  | 0  |
+| Total | 285 samples | 236 samples |
+
+Checking the numbers of samples from GSA. [Click here](https://rajlabmssm.github.io/MiGA_public_release/genotype/GSA/Microglia_Genotypes.html).
+
+Number of eGenes by brain region, including different number of PEER factors. [Click here](https://rajlabmssm.github.io/MiGA_public_release/qtl_pages/sig_eGenes_peer_2nd.html).
+
+You can check the lists of **eGenes**, by brain region [in this link](https://rajlabmssm.github.io/MiGA_public_release/qtl_pages/eQTLs_list_2nd.html).
+
+Number of eGenes (2nd pass - includes covariate file with age, sex and 4 MDS ancestry):
+
+| Tissue  | Sample size | eGenes at qval 5% | eGenes at qval 10% |
+| ------------- | ------ | ------ | ------ |
+| MFG  | 63  | 199  | 267  |
+| STG  | 55  | 127  | 154  |
+| THA  | 53  | 148  | 196  |
+| SVZ  | 45  | 67  | 94  |
+
+***************************************
+mashR pages - eQTL
+***************************************
+
+The page with mashR results is [here](https://rajlabmssm.github.io/MiGA_public_release/mashr_pages/mashr_eqtl/pos_mashR_2nd.html). Include a table with significative genes (lfsr < 0.10), heatmap of pairwise sharing by magnitude, metaplots and posterior.beta table.
+
+Tissue specific effects: [lfsr at 10%](https://rajlabmssm.github.io/MiGA_public_release/mashr_pages/mashr_eqtl/pos_mashR_specific_10per_2nd.html). Include lists of gene-SNP by region.
+
+Tissue specific effects: [lfsr at 5%](https://rajlabmssm.github.io/MiGA_public_release/mashr_pages/mashr_eqtl/pos_mashR_specific_5per_2nd.html). Include lists of gene-SNP by region.
+
+***************************************
+mashR pages - sQTL
+***************************************
+
+The page with mashR results is [here](https://rajlabmssm.github.io/glia_omics/3rd_pass_mic_255s/mash_pages/pos_mashR_sQTL_3rd.html). Includes a table with significative **junction clusters** (lfsr < 0.05) and a heatmap of pairwise sharing by magnitude.
+
+Tissue specific effects: [lfsr at 5%](https://rajlabmssm.github.io/glia_omics/3rd_pass_mic_255s/mash_pages/pos_mashR_sQTL_specific_5per3rd.html). Include lists of cluster-SNP by region.
+
+**************************************
 Colocalization and fine-mapping
 ***************************************
