@@ -1,0 +1,254 @@
+---
+title: "Aging analysis for sQTL"
+subtitle: "PCAs"
+author:  |
+ | Katia de Paiva Lopes 
+ | Jack Humphrey
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> 255 samples | 
+> Different brain regions from the same donor | 
+> PSI matrix from sQTL. 
+> Dream | coef = age.   
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+```
+
+```{r load.packages, echo=FALSE, message=FALSE, results='hide'}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+if(!require("ggeasy")) BiocManager::install("ggeasy"); library("ggeasy")
+if(!require("ggsci")) BiocManager::install("ggsci"); library("ggsci")
+if(!require("ggplot2")) BiocManager::install("ggplot2"); library("ggplot2")
+if(!require("factoextra")) BiocManager::install("factoextra"); library("factoextra")
+if(!require("grid")) BiocManager::install("grid"); library("grid")
+if(!require("variancePartition")) BiocManager::install("variancePartition"); library("variancePartition")
+if(!require("BiocParallel")) install.packages("BiocParallel"); library("BiocParallel")
+if(!require("edgeR")) install.packages("edgeR"); library("edgeR")
+if(!require("statmod")) install.packages("statmod"); library("statmod")
+if(!require("gplots")) install.packages("gplots"); library("gplots")
+if(!require("ggpubr")) install.packages("ggpubr"); library("ggpubr")
+library(readxl)
+library(pheatmap)
+library(reshape2)
+library(kableExtra)
+library(RColorBrewer)
+require(gridExtra)
+library(ggfortify)
+library('doParallel')
+library(dplyr)
+library(tidyr)
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+
+#register(MulticoreParam(workers = 4), default = TRUE)
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r folders, echo=TRUE}
+# expression_dir = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/expr_4brain_regions/"
+work_plots = "~/pd-omics/katia/Microglia/mic_255s/nat_gen_rev1/PSI_data/"
+metadata_path = "~/pd-omics/katia/Microglia/mic_255s/metadata_files/"
+```
+
+**PSI** = proportion of reads supporting the inclusion of a cassette exon. We are using quantile normalisation to be safe with the regressions.
+
+How should we interpret the results? So each entry is a splicing event, either a cassette exon or an alternative splice site. So it's about how much the exon or splice site is used changes with age. In either direction. 
+```{r input.data, echo=TRUE}
+# load(paste0(expression_dir, "Expression_filt_255s.Rdata")) #gene expression data
+# dim(genes_counts_exp_3rd) # 19376   255
+
+load(paste0(metadata_path, "metadata_255filt_eng_29jun2020.Rdata"))
+# str(metadata3rd_pass)
+
+load(paste0(work_plots, "all_microglia_filtered_psi_quantile_df.RData"))
+# dim(psi_qnorm)
+
+gene_annot <- read.delim2(paste0(work_plots, "all_microglia_filtered_gene_annotation.tsv"), header = T)
+
+```
+
+## Number of splicing events
+```{r n_splicing}
+length(unique(gene_annot$clu))
+```
+
+## Number of unique genes
+```{r u_genes}
+length(unique(gene_annot$gene))
+```
+
+## Age distribution
+### 255 samples 
+```{r age_plots, echo=TRUE, fig.width=4, fig.height=3}
+metadata <- metadata3rd_pass
+ageByDonor = unique(metadata[,c("donor_id", "age", "sex")])
+
+ggplot(ageByDonor, aes(x=age, fill=age)) +
+  geom_histogram(bins = 25, colour='black', position = "stack", fill="#5c88da99") +
+  labs(x="Age", y="Donors") +
+  scale_y_continuous(breaks = (1:20)) +
+  scale_x_continuous(breaks=seq(20,120,10)) + 
+  theme_classic()
+
+```
+
+## Dream analysis {.tabset .tabset-fade .tabset-pills} 
+To use **cause_of_death** in the model, I got the NAs and change it for "Other" category. 
+
+To use C1-C4 I calculated the median for the missing samples. 
+
+NOTE: The splicing data is already normalised so, we'll not use voom here. 
+```{r dream, echo=TRUE}
+params = BiocParallel::MulticoreParam(workers=4, progressbar=T)
+register(params)
+registerDoParallel(4)
+
+metadata$cause_of_death_categories[metadata$cause_of_death_categories %in% NA] <- "Other"
+# table(metadata$cause_of_death_categories)
+
+metadata$C1 = metadata$C1 %>% replace_na(median(metadata$C1, na.rm = T))
+metadata$C2 = metadata$C2 %>% replace_na(median(metadata$C2, na.rm = T))
+metadata$C3 = metadata$C3 %>% replace_na(median(metadata$C3, na.rm = T))
+metadata$C4 = metadata$C4 %>% replace_na(median(metadata$C4, na.rm = T))
+
+# Matching the names from the DE analysis to use the same code 
+genes_counts4deg = psi_qnorm
+metadata4deg = metadata
+# all(colnames(genes_counts4deg) == metadata$donor_tissue) # Check the order of columns - TRUE 
+
+# Check variance partition version 
+# packageVersion("variancePartition")  # Must be 1.17.7
+
+# The variable to be tested should be a fixed effect
+form <- ~ sex + (1|donor_id) + age + tissue + (1|cause_of_death_categories) + C1 + C2 + C3 + C4 + picard_pct_mrna_bases + picard_summed_median + picard_pct_ribosomal_bases
+
+# estimate weights using linear mixed model of dream
+vobjDream = suppressWarnings( voomWithDreamWeights( genes_counts4deg, form, metadata4deg ) ) 
+
+# Since the splicing data is already normalised, we'll not use dream voom here. We use the Weights from Dream with the quantile normalised data.
+vobjDream$E = as.matrix(genes_counts4deg)
+
+# Fit the dream model on each gene
+fitmm = suppressWarnings (dream( vobjDream, form, metadata4deg )) 
+
+# Examine design matrix
+# createDT(fitmm$design, 3)
+
+res_age <- data.frame(topTable(fitmm, coef='age', 
+                                 number=nrow(genes_counts4deg), sort.by = "p"), check.names = F)
+
+```
+
+## Splicing events related with age
+### adj.P.Val<0.001
+```{r s1, echo=TRUE, results='asis'}
+length(which(res_age$adj.P.Val<0.001))
+```
+
+### adj.P.Val<0.01
+```{r s2, echo=TRUE, results='asis'}
+length(which(res_age$adj.P.Val<0.01))
+```
+
+### adj.P.Val<0.05
+```{r s3, echo=TRUE, results='asis'}
+length(which(res_age$adj.P.Val<0.05))
+```
+
+### adj.P.Val<0.10
+```{r s4, echo=TRUE, results='asis'}
+length(which(res_age$adj.P.Val<0.10))
+```
+
+### adj.P.Val<0.15
+```{r s5, echo=TRUE, results='asis'}
+length(which(res_age$adj.P.Val<0.15))
+```
+
+```{r design0.lists, echo=TRUE}
+res = res_age
+res$clu = rownames(res)
+res_name = merge(res, gene_annot, by="clu") # to get gene_name
+rownames(res_name) = res_name$clu
+res_name = res_name[order(res_name$adj.P.Val), ]
+res_name$clu = NULL
+
+write.table(res_name, file = paste0(work_plots, "age_splicing_dream.txt"), quote = F, sep = "\t")
+
+createDT(res_name)
+```
+
+## PCA: quantile normalisation 
+ 
+```{r pca_voom, echo=TRUE, fig.width=6, fig.height=4}
+genes_norm = as.data.frame(vobjDream$E) 
+res.pca = prcomp(t(genes_norm)) 
+
+autoplot(res.pca, data = metadata4deg, colour = 'age') +
+  scale_colour_viridis_c() +
+  theme_classic()
+
+```
+
+I'm applying the removeBatchEffect function to get the residuals. 
+```{r remove_batch, echo=TRUE}
+allResiduals <- removeBatchEffect(x = genes_norm, 
+                                  batch = metadata4deg$tissue, 
+                                  batch2 = paste(metadata4deg$sex, metadata4deg$cause_of_death_categories),
+                                  # design = model.matrix(~ age, data = metadata4deg), #force to not regress age. It didn't change the PCA. 
+                                  covariates = as.matrix(metadata4deg[, c("picard_pct_mrna_bases", "picard_summed_median", "picard_pct_ribosomal_bases", "C1","C2","C3","C4" )]))
+
+write.table(allResiduals, file = paste0(work_plots, "age_splicing_dream_residuals.txt"), quote = F, sep = "\t")
+```
+
+## PCA after removeBatchEffect
+```{r pca_noBatch, echo=TRUE, fig.width=6, fig.height=4}
+res.pca = prcomp(t(allResiduals)) 
+
+autoplot(res.pca, data = metadata4deg, colour = 'age') +
+  scale_colour_viridis_c() +
+  theme_classic()
+```
+
+```{r}
+sessionInfo()
+```
+
