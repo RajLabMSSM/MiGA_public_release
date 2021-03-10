@@ -106,7 +106,7 @@ cell_type_df = left_join(data.frame(cell_type = cell_type), cell_type_colors, by
 res <- unlist(lapply(split(cell_type_colors$color, cell_type_colors$cell_type), unlist))
 row_ha = rowAnnotation(`Cell Type` = as.factor(cell_type_df$cell_type), col = list(`Cell Type` = res), show_annotation_name = F)
 
-# pdf(paste0(work_plots, "HM_markers_255s.pdf"), width = 10, height = 6)
+#pdf(paste0(work_plots, "HM_markers_255s.pdf"), width = 10, height = 8)
 colPalette <- colorRampPalette(rev(brewer.pal(10, "RdYlBu")))(256)
 Heatmap(marker_expression,
         col = colPalette,
