@@ -93,7 +93,7 @@ Age-related Analysis
 
 [Effect size correlation](https://rajlabmssm.github.io/MiGA_public_release/age-related_analysis/effect_size_age.html) plots.
 
-DE genes with [interaction term](https://rajlabmssm.github.io/MiGA_public_release/age-related_analysis/age_dream_3ndpass_interaction.html). Include scatter plots by region.
+DE genes with [interaction term](https://rajlabmssm.github.io/MiGA_public_release/age-related_analysis/age_dream_3ndpass_interaction.review.html) between age and region. Include scatter plots by region.
 
 [Age-related for splicing](https://rajlabmssm.github.io/MiGA_public_release/age-related_analysis/age_splicing_analysis/age_related_sqtl.html) data. 
 
