@@ -69,8 +69,6 @@ Covariates: ~ main_diagnosis + sex + (1|donor_id) + age + tissue + (1|cause_of_d
 
  - [Dementia x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_dementiaxct_dream.html)
 
- - [Psychiatric diagnosis x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_psychiatricDiagxct_dream.html)
-
  - [Schizophrenia + Bipolar x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_schizophrenia_bipolarxCT_dream.html)
 
  - [Parkinson's x CT](https://rajlabmssm.github.io/MiGA_public_release/DE_diagnosis/deg_pdxct_dream.html)
@@ -81,7 +79,6 @@ Number of DE genes by comparison from Dream:
 | ------------- | ------ |
 | Depression x CT  | 0 |
 | Dementia x CT  | 24 |
-| Psychiatric diagnosis x CT  | 0 |
 | Schizophrenia + Bipolar x CT  | 0 |
 | Parkinson's x CT  | 0 |
 
