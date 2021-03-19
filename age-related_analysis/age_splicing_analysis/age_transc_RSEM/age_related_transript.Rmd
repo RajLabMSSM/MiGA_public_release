@@ -1,0 +1,235 @@
+---
+title: "Aging analysis for sQTL"
+subtitle: " "
+author:  |
+ | Katia de Paiva Lopes 
+ | Jack Humphrey
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+
+> 255 samples | 
+> Transcripts from RSEM | 
+> Dream | coef = age.   
+
+```{r clean.variables, echo=FALSE}
+#This command clean all variables. BE CAREFULL!!! 
+rm(list = setdiff(ls(), lsf.str()))
+
+library(edgeR)
+library(ggplot2)
+library('doParallel')
+library("BiocParallel")
+library('tidyverse')
+library("variancePartition")
+
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+```
+
+```{r Helper Functions, echo=FALSE}
+createDT <- function(DF, caption="", scrollY=500){
+  data <- DT::datatable(DF, caption=caption,
+    extensions =  'Buttons',
+    options = list( dom = 'Bfrtip', 
+                    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), 
+                    scrollY = scrollY, scrollX=T, scrollCollapse = T, paging = F,  
+                      columnDefs = list(list(className = 'dt-center', targets = "_all"))
+    )
+  ) 
+   return(data)
+}
+```
+
+```{r path_data}
+expression_path = "~/ad-omics_hydra/microglia_omics/expression_tables/added_pilot_314s/"
+metadata_path = "~/pd-omics/katia/Microglia/mic_255s/metadata_files/"
+```
+
+```{r input_data}
+load(paste0(metadata_path, "metadata_255filt_eng_29jun2020.Rdata"))
+# str(metadata3rd_pass)
+
+load(paste0(expression_path, "tx_matrix.RData"))
+# dim(tx_counts)
+# dim(tx_tpm)
+
+tx_counts_filt = tx_counts
+colnames(tx_counts_filt) = gsub("(.*?)\\.(.*)", "\\1", colnames(tx_counts_filt))
+
+tx_counts_filt = tx_counts_filt[, as.character(metadata3rd_pass$donor_tissue)]
+
+#Filter genes:
+x = data.frame(tx_counts_filt, check.names = F)
+cpm = cpm(x)
+keep.exp = rowSums(cpm > 1) >= 0.3*ncol(x) 
+tx_counts_filt = tx_counts_filt[keep.exp,] # final filtered transcript table
+
+#save(tx_counts_filt, file = paste0(expression_path, "/expr_255s_tx/tx_matrix_255s_filt.RData"))
+```
+
+## Age distribution
+### 255 samples 
+```{r age_plots, echo=TRUE, fig.width=4, fig.height=3}
+metadata <- metadata3rd_pass
+ageByDonor = unique(metadata[,c("donor_id", "age", "sex")])
+
+ggplot(ageByDonor, aes(x=age, fill=age)) +
+  geom_histogram(bins = 25, colour='black', position = "stack", fill="#5c88da99") +
+  labs(x="Age", y="Donors") +
+  scale_y_continuous(breaks = (1:20)) +
+  scale_x_continuous(breaks=seq(20,120,10)) + 
+  theme_classic()
+
+```
+
+## Dream analysis {.tabset .tabset-fade .tabset-pills} 
+To use **cause_of_death** in the model, I got the NAs and change it for "Other" category. 
+
+To use C1-C4 I calculated the median for the missing samples. 
+```{r dream, echo=TRUE, eval=F}
+params = BiocParallel::MulticoreParam(workers=20, progressbar=T)
+register(params)
+registerDoParallel(20)
+
+metadata$cause_of_death_categories[metadata$cause_of_death_categories %in% NA] <- "Other"
+# table(metadata$cause_of_death_categories)
+
+metadata$C1 = metadata$C1 %>% replace_na(median(metadata$C1, na.rm = T))
+metadata$C2 = metadata$C2 %>% replace_na(median(metadata$C2, na.rm = T))
+metadata$C3 = metadata$C3 %>% replace_na(median(metadata$C3, na.rm = T))
+metadata$C4 = metadata$C4 %>% replace_na(median(metadata$C4, na.rm = T))
+
+# Matching the names from the DE analysis 
+genes_counts4deg = tx_counts_filt
+metadata4deg = metadata
+# all(colnames(tx_counts_filt) == as.character(metadata4deg$donor_tissue)) # Check the order of columns - TRUE 
+
+# The dream model operates directly on the results of voom. 
+# The only change compared to the standard limma workflow is to replace lmFit with dream. 
+
+# Check variance partition version 
+# packageVersion("variancePartition")  # Must be 1.17.7
+
+# The variable to be tested should be a fixed effect
+form <- ~ sex + (1|donor_id) + age + tissue + (1|cause_of_death_categories) + C1 + C2 + C3 + C4 + picard_pct_mrna_bases + picard_summed_median + picard_pct_ribosomal_bases
+
+# estimate weights using linear mixed model of dream
+vobjDream = suppressWarnings( voomWithDreamWeights( genes_counts4deg, form, metadata4deg ) ) # supressing messages because of Biocparallel was generating a lot of messages  
+ 
+# Fit the dream model on each gene
+# By default, uses the Satterthwaite approximation for the hypothesis test
+fitmm = suppressWarnings (dream( vobjDream, form, metadata4deg )) 
+
+# Examine design matrix
+# createDT(fitmm$design, 3)
+
+res_age <- data.frame(topTable(fitmm, coef='age', 
+                                 number=nrow(genes_counts4deg), sort.by = "p"), check.names = F)
+
+save(vobjDream, form, fitmm, res_age, genes_counts4deg, metadata4deg, file = "dream_DE_res.RData")
+```
+
+## Transcripts related with age
+
+```{r design0.lists, echo=TRUE}
+load("dream_DE_res.RData")
+res = res_age
+res$ensembl_transcript = rownames(res)
+
+## Get conversion table for Gencode 30
+gencode_30 = read.table("~/pd-omics/katia/ens.geneid.gencode.v30", header = T)
+colnames(gencode_30) = c("ensembl","symbol")
+gencode_30_map = read.table("~/pd-omics/katia/gencode.v30.primary_assembly.annotation.reflat", header = F)[,1:2]
+colnames(gencode_30_map) = c("ensembl","ensembl_transcript")
+gencode_30_map = gencode_30_map %>% left_join(gencode_30)
+
+res_name = merge(res, gencode_30_map, by="ensembl_transcript")
+rownames(res_name) = res_name$ensembl_transcript
+res_name = res_name[order(res_name$adj.P.Val), ]
+res_name = res_name[, c("symbol", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val")]
+   
+#deg_lists = res_name[which(res_name$adj.P.Val<0.001),]
+
+write.table(res_name, file = paste0("List_age_dream_255s.txt"), quote = F, sep = "\t")
+# write.table(deg_lists, file = paste0(work_plots, "List_age_0.001_dream.txt"), quote = F, sep = "\t")
+
+createDT(res_name)
+```
+
+### adj.P.Val<0.001
+```{r design0.deg1, echo=TRUE, results='asis'}
+print(paste0("Num DE transcripts = ", length(which(res_name$adj.P.Val<0.001))))
+print(paste0("Num DE unique genes = ", nrow(res_name %>% filter(adj.P.Val<0.001) %>% select(symbol) %>% distinct())))
+```
+
+### adj.P.Val<0.01
+```{r design0.deg2, echo=TRUE, results='asis'}
+print(paste0("Num DE transcripts = ", length(which(res_name$adj.P.Val<0.01))))
+print(paste0("Num DE unique genes = ", nrow(res_name %>% filter(adj.P.Val<0.01) %>% select(symbol) %>% distinct())))
+```
+
+### adj.P.Val<0.05
+```{r design0.deg3, echo=TRUE, results='asis'}
+print(paste0("Num DE transcripts = ", length(which(res_name$adj.P.Val<0.05))))
+print(paste0("Num DE unique genes = ", nrow(res_name %>% filter(adj.P.Val<0.05) %>% select(symbol) %>% distinct())))
+```
+
+
+## PCA voom 
+
+The voom here comes from the Dream object. 
+
+```{r pca_voom, echo=TRUE, fig.width=6, fig.height=4}
+genes_voom = as.data.frame(vobjDream$E) 
+res.pca = prcomp(t(genes_voom)) 
+library(ggfortify); library(ggplot2)
+autoplot(res.pca, data = metadata4deg, colour = 'age') +
+  scale_colour_viridis_c() +
+  theme_classic()
+
+```
+
+I'm applying the removeBatchEffect function to get the residuals. 
+```{r remove_batch, echo=TRUE}
+allResiduals <- removeBatchEffect(x = genes_voom, 
+                                  batch = metadata4deg$tissue, 
+                                  batch2 = paste(metadata4deg$sex, metadata4deg$cause_of_death_categories),
+                                 # design = model.matrix(~ age, data = metadata4deg), #force to not regress age. It didn't change the PCA. 
+                                  covariates = as.matrix(metadata4deg[, c("picard_pct_mrna_bases", "picard_summed_median", "picard_pct_ribosomal_bases", "C1","C2","C3","C4" )]))
+
+```
+
+## PCA after removeBatchEffect
+```{r pca_noBatch, echo=TRUE, fig.width=6, fig.height=4}
+res.pca = prcomp(t(allResiduals)) 
+
+autoplot(res.pca, data = metadata4deg, colour = 'age') +
+  scale_colour_viridis_c() +
+  theme_classic()
+```
+
+```{r}
+sessionInfo()
+```
+
+
