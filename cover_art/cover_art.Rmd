@@ -1,0 +1,370 @@
+---
+title: "Covert Art" 
+authors:  |
+ | 
+ | Brian M. Schilder
+ | 
+ | Raj Lab
+ | Department of Neuroscience
+ | Icahn School of Medicine at Mount Sinai
+ | NYC, New York
+date: "`r Sys.Date()`"
+output: 
+ rmarkdown::html_document:
+   theme: united
+   highlight: tango
+   code_folding: hide
+   toc: true
+   toc_float: true
+   df_print: paged
+   smooth_scroll: true
+   number_sections: false
+   self_contained: true  
+---
+ 
+```{r setup, include=TRUE, message=FALSE, warning=FALSE} 
+knitr::opts_chunk$set( 
+  warning=FALSE,
+  message=FALSE,
+  results = 'asis',
+  error = FALSE,
+  tidy = FALSE,
+  fig.show = "hold")
+
+library(ggplot2)
+library(dplyr)
+set.seed(2020)
+```
+
+
+# Import data 
+
+```{r}
+tmp_path <- tempfile(fileext=".tsv.gz")
+download.file("https://zenodo.org/record/4118676/files/COLOC_supp_table_all_results.tsv.gz?download=1",
+              tmp_path)
+coloc <- data.table::fread(tmp_path)
+```
+
+## Subset the data 
+
+Only plot GWAS-QTL connections with colocalization probability (PP.H4) >= 80%. 
+
+```{r}
+disease_key <- c("SCZ"="Schizophrenia",
+                 "AD"="Alzheimer's",
+                 "BPD"="Bipolar",
+                 "MS"="Multiple Sclerosis",
+                 "PD"="Parkinson's")
+coloc_top <- coloc %>% 
+    dplyr::group_by(disease, GWAS, locus, QTL, type, cell_type) %>%
+    dplyr::slice_max(PP.H4.abf, n = 1) %>%
+    dplyr::group_by(disease, cell_type) %>%
+    dplyr::arrange(disease,GWAS, cell_type,QTL,locus) %>%
+    subset(PP.H4.abf >= .5) %>%
+    dplyr::mutate(disease=disease_key[disease],
+                  cell_type=ifelse(QTL=="Microglia_all_regions_Young","Microglia",cell_type),
+                  ID_GWAS=make.unique(paste(GWAS, locus,sep="_")),
+                  ID_QTL=make.unique(paste(QTL, locus,sep="_"))) %>%
+    dplyr::ungroup() %>%
+    data.table::data.table()
+
+
+data_long <- data.frame(coloc_top) %>% 
+    dplyr::select(rowname=disease, key=cell_type, value=PP.H4.abf, QTL) 
+data_long <- data_long[complete.cases(data_long),]
+```
+
+## Create graph 
+
+Convert data to graph format. 
+
+```{r}
+
+#### Edges ####
+edges <- coloc_top %>% 
+    dplyr::select(from=ID_GWAS, to=ID_QTL, value=PP.H4.abf) 
+#### Vertices ####
+vertices <- rbind(dplyr::select(coloc_top,
+                                name=ID_GWAS,
+                                dataset=GWAS,
+                                group=disease,
+                                locus) %>%
+                       dplyr::mutate(type="GWAS"),
+                   dplyr::select(coloc_top,
+                                 name=ID_QTL,
+                                 dataset=QTL,
+                                 group=cell_type,
+                                 locus)%>%
+                       dplyr::mutate(type="cell_type"))  %>%
+    unique() 
+#### Graph object #### 
+g <- igraph::graph.data.frame(d = edges, 
+                      vertices=vertices,
+                       directed=FALSE)
+```
+
+## Setup fonts
+
+[extrafont](https://r-graphics.org/recipe-output-fonts-pdf)  
+
+[showtext](https://cran.rstudio.com/web/packages/showtext/vignettes/introduction.html)
+
+```{r} 
+# library(extrafont) ## Necessary to export fonts properly
+# extrafont::font_import() # Only need to do once
+# extrafont::loadfonts()
+library(showtext)
+
+# "Aldrich"
+# "VT323"
+# "Orbitron"
+# "Crack Man"
+# "Press Start 2P"
+sysfonts::font_add_google("Press Start 2P")
+# sysfonts::font_add("Crack Man",)
+```
+
+
+ 
+
+# circlize chord
+
+[From example](https://www.data-to-viz.com/graph/chord.html)
+
+```{r, fig.height=10, fig.width=10}
+# Libraries
+library(tidyverse)
+library(viridis)
+library(patchwork)
+library(hrbrthemes)
+library(circlize)
+library(chorddiag)  #devtools::install_github("mattflor/chorddiag")
+
+
+{
+    showtext::showtext.auto()
+    plot_name <- "circos_pacman.pdf"
+    # pdf(plot_name, width = 10, height = 10)
+    set.seed(2020)
+    # color palette
+    group_cols <- pals::gnuplot(n = dplyr::n_distinct(data_long$rowname) +
+                                    dplyr::n_distinct(data_long$key)+1)[-1] 
+    names(group_cols) <- c(unique(data_long$rowname), unique(data_long$key))
+    gap.after <- setNames(rep(3, length(group_cols)), names(group_cols))
+    # gap.after["Monocytes"] <- 40
+    gap.after["Schizophrenia"] <- 70# 40
+    # unit.circle.segments <- c(rep(1, dplyr::n_distinct(data_long$rowname)),
+    #                           rep(.5,dplyr::n_distinct(data_long$key)))
+    # names(unit.circle.segments) <- c(unique(data_long$rowname), unique(data_long$key))
+    # parameters
+    circos.clear()
+    circos.par(start.degree = 180,#70, 
+               gap.degree = .1, 
+               track.margin = c(-0.1, 0.1), 
+               points.overflow.warning = FALSE,
+               clock.wise=TRUE,
+               gap.after = gap.after
+               ### Makes circle more or less angular 
+               # unit.circle.segments = 500
+               )
+    ### General plot parameters 
+    par(mar = rep(0, 4),
+        bg = "black") 
+    
+    
+    # Base plot
+    chordDiagram(
+      x = data_long, 
+      scale = FALSE,
+      grid.col = group_cols,
+      # grid.border = "white",
+      transparency = 0.5,
+      directional = 1,
+      direction.type = c("arrows", "diffHeight"), 
+      diffHeight  = -0.04,
+      annotationTrack = "grid", 
+      annotationTrackHeight = c(0.05, 0.1),
+      link.arr.type = "big.arrow", 
+      link.sort = TRUE, 
+      link.largest.ontop = TRUE,
+      link.target.prop= TRUE )
+    
+    # abline(v = 0, lty = 2, col = "#00000080") 
+    circos.track(sectors="Parkinson's",
+                 x=mean(subset(data_long, rowname=="Parkinson's")$x), 
+                 ylim=c(0,1), 
+                 panel.fun = function(x, y) {
+                      xlim = get.cell.meta.data("xlim")
+                      sector.index = get.cell.meta.data("sector.index")
+                      message(sector.index) 
+                      circos.points(
+                                 x=mean(xlim),
+                                 y=-1, 
+                                 cex = if(sector.index=="Parkinson's") 15 else 0, 
+                                 pch=16,
+                                 col = if(sector.index=="Parkinson's"){
+                                     rgb(1,1,1,.25)
+                                 } else {rgb(1,1,1,0)}
+                                     ) 
+                     }
+                 )
+    
+    # Add text and axis
+    circos.trackPlotRegion(
+      track.index = 1, 
+      bg.border = NA, 
+      panel.fun = function(x, y) {
+        
+        xlim = get.cell.meta.data("xlim")
+        sector.index = get.cell.meta.data("sector.index")
+        
+        # Add names to the sector. 
+        circos.text(
+          x = mean(xlim), 
+          y = 1.5, 
+          labels = gsub("","   ",sector.index), 
+          facing = "bending", 
+          niceFacing = TRUE,
+          cex = .5, 
+          col = "white", 
+          font=1,
+          family="Press Start 2P"
+          )
+    
+        # Add graduation on axis
+        circos.axis(
+          h = "top", 
+          # col = "white",
+          labels= FALSE,
+          major.tick = TRUE,
+          major.at = seq(from = 0, to = xlim[2], 
+                         by = ifelse(test = xlim[2]>10, yes = 4, no = 2)), 
+          minor.ticks = 0,
+          major.tick.percentage = 0.5,
+          labels.niceFacing = FALSE)
+      }
+    )
+   
+    # dev.off()
+}
+```
+
+
+# circlize scatter
+
+```{r, fig.height=10, fig.width=10}
+library(circlize)
+data <- coloc_top
+
+data$factor <- data$GWAS
+data$x <- data$GWAS_pos
+data$y <- data$PP.H4.abf
+group_cols <- pals::alphabet(n = dplyr::n_distinct(data$factor))
+
+{ 
+    circos.clear() 
+    #Initialize the plot.
+    par(mar = c(1, 1, 1, 1) ) 
+    circos.initialize(factors = data$factor, x = data$x )
+     
+    #### TRACK 1 ####
+    # Build the regions of track #1 
+    circos.trackPlotRegion(factors = data$factor, 
+                           y=data$y, 
+                           panel.fun = function(x, y) {
+                               circos.axis(labels.cex=0.5, labels.font=1, lwd=0.8)
+                           }
+    )
+    # --> Add a scatterplot on it:
+    circos.trackPoints(data$factor, data$x, data$y, col = group_cols, pch=20)
+     
+     #### TRACK 2 ####
+    # Build the regions of track #2:
+    circlize::circos.trackPlotRegion(factors = data$factor, y=data$y, panel.fun = function(x, y) {
+        circos.axis(labels=FALSE, major.tick=FALSE)
+        })
+    # --> Add a scatterplot on it
+    circos.trackPoints(data$factor, data$x, data$y, col = rgb(0.9,0.5,0.8,0.3), pch=20, cex=2)
+     
+     #### TRACK 3 ####
+    # Add track #3 --> don't forget you can custom the height of tracks!
+    circos.par("track.height" = 0.4)
+    circos.trackPlotRegion(factors = data$factor, y=data$y, panel.fun = function(x, y) {
+        circos.axis(labels=FALSE, major.tick=FALSE)
+        })
+    circos.trackLines(data$factor, data$x, data$y, col = rgb(0.9,0.5,0.1,0.3), pch=20, cex=2, type="h")
+    # and continue as long as needed!
+}
+```
+
+
+# ggraph 
+
+[ggraph](https://www.data-to-viz.com/graph/edge_bundling.html)
+
+```{r, eval=F}
+# Libraries
+library(tidyverse)
+library(viridis)
+library(patchwork)
+library(hrbrthemes)
+library(ggraph)
+library(igraph)
+
+# The flare dataset is provided in ggraph 
+# vertices <- flare$vertices %>% arrange(name) %>% mutate(name=factor(name, name)) 
+connections <- subset(edges, value>.9)
+
+# Preparation to draw labels properly:
+vertices$id=NA
+myleaves=which(is.na( match(vertices$name, edges$from) ))
+nleaves=length(myleaves)
+vertices$id[ myleaves ] = seq(1:nleaves)
+vertices$angle= 90 - 360 * vertices$id / nleaves
+vertices$hjust<-ifelse( vertices$angle < -90, 1, 0)
+vertices$angle<-ifelse(vertices$angle < -90, vertices$angle+180, vertices$angle)
+
+# Build a network object from this dataset:
+mygraph <- graph_from_data_frame(edges, vertices = vertices)
+
+# The connection object must refer to the ids of the leaves:
+from = match( connections$from, vertices$name)
+to = match( connections$to, vertices$name)
+ 
+# Make the plot
+ggraph(mygraph, layout = 'dendrogram', circular = TRUE) + 
+    geom_conn_bundle(data = get_con(from = from, to = to), alpha = 0.1, colour="#69b3a2") +
+    ggraph::geom_edge_density() + 
+    geom_node_text(aes(x = x*1.01, y=y*1.01, filter = leaf, label=group, angle = angle, hjust=hjust), size=1.5, alpha=1) +
+    coord_fixed() +
+    theme_void() +
+    theme(
+      legend.position="none",
+      plot.margin=unit(c(0,0,0,0),"cm"),
+    ) +
+    expand_limits(x = c(-1.2, 1.2), y = c(-1.2, 1.2))
+
+```
+
+
+# edgebundleR
+
+```{r, eval=F}
+library(edgebundleR)
+edgebundle(g)
+```
+
+
+
+# Session Info 
+
+<details> 
+
+```{r}
+utils::sessionInfo()
+```
+
+</details>
+
+
