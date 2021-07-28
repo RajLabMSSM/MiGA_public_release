@@ -161,3 +161,17 @@ Colocalization and fine-mapping
  - Fine-mapping and [COLOC overlaps](https://rajlabmssm.github.io/MiGA_public_release/qtl_analysis/coloc_fine_mapping_overlaps.html).
 
 
+**************************************
+Single-cell analysis
+**************************************
+
+- [Link for the single-cell results](https://github.com/RajLabMSSM/scRNAseq-Microglia-Pilot). Includes Quality Control and Downstream analysis. 
+
+
+
+
+
+
+
+
+
